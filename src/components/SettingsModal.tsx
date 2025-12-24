@@ -1,7 +1,8 @@
 
-import React, { useState } from 'react';
-import { X, Moon, Sun, Shield, Trash2, Monitor, RefreshCw, CheckCircle2, AlertTriangle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Moon, Sun, Shield, Trash2, Monitor, RefreshCw, CheckCircle2, AlertTriangle, Server, Network } from 'lucide-react';
 import { removePin } from '../services/authService';
+import { TALLY_API_URL, BACKEND_API_URL } from '../constants';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -11,6 +12,28 @@ interface SettingsModalProps {
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggleDarkMode }) => {
   const [confirmReset, setConfirmReset] = useState(false);
+  
+  // URL States
+  const [tallyUrl, setTallyUrl] = useState('');
+  const [backendUrl, setBackendUrl] = useState('');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved'>('idle');
+
+  useEffect(() => {
+    // Initialize with current values
+    setTallyUrl(localStorage.getItem('tally_api_url') || TALLY_API_URL);
+    setBackendUrl(localStorage.getItem('backend_api_url') || BACKEND_API_URL);
+  }, []);
+
+  const handleSaveUrls = () => {
+    if (tallyUrl) localStorage.setItem('tally_api_url', tallyUrl);
+    if (backendUrl) localStorage.setItem('backend_api_url', backendUrl);
+    
+    setSaveStatus('saved');
+    setTimeout(() => {
+      setSaveStatus('idle');
+      window.location.reload(); // Reload to apply changes
+    }, 1500);
+  };
 
   const handleResetPin = () => {
     removePin();
@@ -28,7 +51,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4 animate-fade-in">
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-md overflow-hidden flex flex-col">
+      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
         
         {/* Header */}
         <div className="p-5 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900/50">
@@ -42,7 +65,49 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
         </div>
 
         {/* Body */}
-        <div className="p-6 space-y-8">
+        <div className="p-6 space-y-8 overflow-y-auto">
+
+            {/* Network Configuration */}
+            <div>
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Network Configuration</h4>
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-2">
+                            <Network className="w-3.5 h-3.5" /> Tally Prime URL
+                        </label>
+                        <input 
+                            type="text" 
+                            value={tallyUrl}
+                            onChange={(e) => setTallyUrl(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500"
+                            placeholder="http://127.0.0.1:9000"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-2">
+                            <Server className="w-3.5 h-3.5" /> Backend API URL
+                        </label>
+                        <input 
+                            type="text" 
+                            value={backendUrl}
+                            onChange={(e) => setBackendUrl(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500"
+                            placeholder="https://your-backend.onrender.com"
+                        />
+                    </div>
+                    <button 
+                        onClick={handleSaveUrls}
+                        className={`w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                            saveStatus === 'saved'
+                            ? 'bg-green-600 text-white'
+                            : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                        }`}
+                    >
+                        {saveStatus === 'saved' ? <CheckCircle2 className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
+                        {saveStatus === 'saved' ? 'Saved & Reloading...' : 'Save Network Settings'}
+                    </button>
+                </div>
+            </div>
             
             {/* Appearance Section */}
             <div>

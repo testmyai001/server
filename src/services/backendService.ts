@@ -236,6 +236,106 @@ export const processBulkDocumentsWithAI = async (
   }
 };
 
+// Process bank statement PDF via backend
+export const processBankStatementPDF = async (
+  file: File,
+  apiKey: string
+): Promise<{
+  success: boolean;
+  documentType: string;
+  bankName?: string;
+  accountNumber?: string;
+  transactions?: any[];
+  message?: string;
+  status?: number;
+}> => {
+  try {
+    const headers: HeadersInit = {
+      'Authorization': `Bearer ${apiKey}`,
+    };
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${BACKEND_API_URL}/ai/process-bank-statement-pdf`, {
+      method: 'POST',
+      headers,
+      body: formData
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, documentType: 'BANK_STATEMENT', message: data.detail || 'Failed to process bank statement', status: response.status };
+    }
+    return { success: true, status: response.status, ...data };
+  } catch (error: any) {
+    return { success: false, documentType: 'BANK_STATEMENT', message: error.message, status: 500 };
+  }
+};
+
+export const processBankStatement = async (
+  file: File,
+  apiKey: string
+): Promise<{
+  success: boolean;
+  documentType: string;
+  bankName?: string;
+  accountNumber?: string;
+  transactions?: any[];
+  message?: string;
+  status?: number;
+}> => {
+  try {
+    const headers: HeadersInit = {
+      'Authorization': `Bearer ${apiKey}`
+    };
+
+    const form = new FormData();
+    form.append('file', file);
+
+    const response = await fetch(`${BACKEND_API_URL}/ai/process-bank-statement`, {
+      method: 'POST',
+      headers,
+      body: form
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, documentType: 'BANK_STATEMENT', message: data.detail || 'Failed to process bank statement', status: response.status };
+    }
+    return { success: true, status: response.status, ...data };
+  } catch (error: any) {
+    return { success: false, documentType: 'BANK_STATEMENT', message: error.message, status: 500 };
+  }
+};
+// Send chat message via backend
+export const sendChatMessage = async (
+  history: Array<{ role: string; parts: Array<{ text: string }> }>,
+  apiKey: string,
+  systemInstruction?: string
+): Promise<{ success: boolean; text?: string; message?: string }> => {
+  try {
+    const headers: HeadersInit = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    };
+
+    const response = await fetch(`${BACKEND_API_URL}/ai/chat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ history, system_instruction: systemInstruction })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, message: data.detail || 'Chat failed' };
+    }
+    return { success: true, text: data.text };
+  } catch (error: any) {
+    return { success: false, message: error.message };
+  }
+};
+
 // Save invoice to backend
 export const saveInvoiceToBackend = async (
   invoice: InvoiceData,
@@ -331,28 +431,6 @@ export const getHistoryFromBackend = async (
   }
 
   return [];
-};
-
-// Get Gemini API Key from backend
-export const getGeminiApiKey = async (
-  apiKey: string
-): Promise<{
-  success: boolean;
-  geminiApiKey?: string;
-  message: string;
-}> => {
-  const response = await apiRequest<{ geminiApiKey: string }>(
-    `${BACKEND_API_URL}/ai/gemini-key`,
-    'GET',
-    undefined,
-    apiKey
-  );
-
-  return {
-    success: response.success,
-    geminiApiKey: response.data?.geminiApiKey,
-    message: response.message,
-  };
 };
 
 export default {

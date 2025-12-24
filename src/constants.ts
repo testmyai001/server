@@ -3,7 +3,7 @@ import { InvoiceData } from './types';
 /**
  * ARCHITECTURE:
  * 
- * Backend API (https://autotally-backend.onrender.com)
+ * Backend API (https://desktopserver.onrender.com)
  *   - Holds API keys
  *   - AI document processing
  *   - Invoice storage/history
@@ -20,11 +20,22 @@ import { InvoiceData } from './types';
  */
 
 // Backend API Configuration - AI & Data Only (No Tally)
-export const BACKEND_API_URL = import.meta.env.VITE_BACKEND_API_URL || 'https://autotally-backend.onrender.com';
-export const BACKEND_API_KEY = import.meta.env.VITE_BACKEND_API_KEY || '';
+export const BACKEND_API_URL = localStorage.getItem('backend_api_url') || import.meta.env.VITE_API_BASE_URL || 'https://server1000-63i8.onrender.com';
+export const BACKEND_API_KEY = import.meta.env.VITE_BACKEND_API_KEY || 'test-backend-key-12345';
 
 // Tally Prime runs on port 9000 - Connected DIRECTLY from React only
-export const TALLY_API_URL = process.env.VITE_TALLY_API_URL || 'http://127.0.0.1:9000';
+// Tally Prime runs on port 9000 - Connected via Proxy to avoid CORS
+// Force /tally in development to ensure Vite proxy is used
+const getTallyUrl = () => {
+  // If user has set a custom URL in settings, use it
+  const customUrl = localStorage.getItem('tally_api_url');
+  if (customUrl) return customUrl;
+  
+  // Default logic
+  return import.meta.env.DEV ? '/tally' : (import.meta.env.VITE_TALLY_API_URL || 'http://127.0.0.1:9000');
+};
+
+export const TALLY_API_URL = getTallyUrl();
 
 // API Endpoints - Backend ONLY (No Tally endpoints)
 export const API_ENDPOINTS = {
@@ -45,6 +56,11 @@ export const API_ENDPOINTS = {
   logEvent: '/logs/event',
   getHistory: '/history',
 };
+
+// Validation & Defaults
+export const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+export const DATE_REGEX = /^\d{2}-\d{2}-\d{4}$/;
+export const DEFAULT_GST_RATE = 18;
 
 export const MOCK_INVOICE: InvoiceData = {
   supplierName: 'Tech Solutions Pvt Ltd',

@@ -37,3 +37,7 @@ env.bak/
 venv.bak/
 .pytest_cache/
 
+# Electron builds
+release/
+release_v*/
+dist-electron/

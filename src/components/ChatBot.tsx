@@ -1,72 +1,46 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Bot, User, Loader2, Eraser, MessageSquare } from 'lucide-react';
-import { createChatSession } from '../services/geminiService';
-import { getGeminiApiKey } from '../services/backendService';
-import { Chat } from '@google/genai';
+import { sendChatMessage } from '../services/backendService';
 import { BACKEND_API_KEY } from '../constants';
+import { Message } from '../types';
 
-interface Message {
-  id: string;
-  role: 'user' | 'model';
-  text: string;
-  timestamp: Date;
+interface ChatBotProps {
+  messages: Message[];
+  onUpdateMessages: (messages: Message[] | ((prev: Message[]) => Message[])) => void;
 }
 
-const ChatBot: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      role: 'model',
-      text: 'Hello! I am your AutoTally Assistant. I specialize in Tally Prime XML, Indian GST laws, and accounting automation. How can I help you today?',
-      timestamp: new Date()
-    }
-  ]);
+const ChatBot: React.FC<ChatBotProps> = ({ messages, onUpdateMessages }) => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [geminiApiKey, setGeminiApiKey] = useState<string | null>(null);
-  const chatSessionRef = useRef<Chat | null>(null);
+  const chatHistoryRef = useRef<Array<{ role: string; parts: Array<{ text: string }> }>>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Auto-resize textarea
   useEffect(() => {
-    const initializeChat = async () => {
-      try {
-        console.log('ChatBot: Initializing chat...');
-        console.log('ChatBot: BACKEND_API_KEY =', BACKEND_API_KEY);
-        console.log('ChatBot: Calling getGeminiApiKey...');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+    }
+  }, [input]);
 
-        // Fetch Gemini API key from backend
-        const result = await getGeminiApiKey(BACKEND_API_KEY);
-
-        console.log('ChatBot: getGeminiApiKey result =', result);
-
-        if (result.success && result.geminiApiKey) {
-          console.log('ChatBot: Got Gemini API key, creating session...');
-          setGeminiApiKey(result.geminiApiKey);
-          chatSessionRef.current = createChatSession(result.geminiApiKey);
-          console.log('ChatBot: Session created successfully');
-        } else {
-          console.error("Failed to get Gemini API key:", result.message);
-          const errorMsg: Message = {
-            id: Date.now().toString(),
-            role: 'model',
-            text: 'Unable to initialize AI chat. Please check your backend connection.',
-            timestamp: new Date()
-          };
-          setMessages(prev => [...prev, errorMsg]);
-        }
-      } catch (e) {
-        console.error("Failed to initialize chat session", e);
-      }
-    };
-
-    initializeChat();
+  // Initialize/Rebuild chat history from props when component mounts
+  useEffect(() => {
+    // Reconstruct AI history context from existing messages
+    const history = messages.map(msg => ({
+      role: msg.role,
+      parts: [{ text: msg.text }]
+    }));
+    chatHistoryRef.current = history;
+    scrollToBottom();
   }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // Scroll on new messages
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
@@ -74,29 +48,15 @@ const ChatBot: React.FC = () => {
   const handleSend = async () => {
     if (!input.trim()) return;
 
-    if (!chatSessionRef.current) {
-      try {
-        if (!geminiApiKey) {
-          const errorMsg: Message = {
-            id: (Date.now()).toString(),
-            role: 'model',
-            text: "AI Chat Engine unavailable. Gemini API key not loaded.",
-            timestamp: new Date()
-          };
-          setMessages(prev => [...prev, errorMsg]);
-          return;
-        }
-        chatSessionRef.current = createChatSession(geminiApiKey);
-      } catch (e) {
-        const errorMsg: Message = {
-          id: (Date.now()).toString(),
-          role: 'model',
-          text: "AI Chat Engine unavailable. Please check your API configuration.",
-          timestamp: new Date()
-        };
-        setMessages(prev => [...prev, errorMsg]);
-        return;
-      }
+    if (!BACKEND_API_KEY) {
+      const errorMsg: Message = {
+        id: (Date.now()).toString(),
+        role: 'model',
+        text: "Backend API key missing. Please configure your backend connection.",
+        timestamp: new Date()
+      };
+      onUpdateMessages(prev => [...prev, errorMsg]);
+      return;
     }
 
     const userMsg: Message = {
@@ -106,12 +66,14 @@ const ChatBot: React.FC = () => {
       timestamp: new Date()
     };
 
-    setMessages(prev => [...prev, userMsg]);
+    onUpdateMessages(prev => [...prev, userMsg]);
     setInput('');
     setIsLoading(true);
 
     try {
-      const result = await chatSessionRef.current.sendMessage({ message: userMsg.text });
+      // Update history and send to backend
+      chatHistoryRef.current.push({ role: 'user', parts: [{ text: userMsg.text }] });
+      const result = await sendChatMessage(chatHistoryRef.current, BACKEND_API_KEY, 'You are AutoTally Assistant, a proprietary AI developed exclusively by TAXBLOCK PROFESSIONAL SERVICES PRIVATE LIMITED. You are an expert in Tally Prime, Indian GST laws, and accounting automation. STRICT RULES: 1. If asked who created, developed, or made you, you MUST reply: "I was developed by TAXBLOCK PROFESSIONAL SERVICES PRIVATE LIMITED." Do NOT mention Google, Gemini, LLMs, or any other AI models. 2. You must ONLY answer questions related to accounting, taxation, Tally Prime, GST, and financial matters. 3. If a user asks about anything else (e.g., general knowledge, coding, creative writing, sports), politely decline and state that you are a specialized accounting assistant.');
       const responseText = result.text;
 
       const modelMsg: Message = {
@@ -120,7 +82,8 @@ const ChatBot: React.FC = () => {
         text: responseText || "I encountered an error while processing your request.",
         timestamp: new Date()
       };
-      setMessages(prev => [...prev, modelMsg]);
+      onUpdateMessages(prev => [...prev, modelMsg]);
+      chatHistoryRef.current.push({ role: 'model', parts: [{ text: responseText || '' }] });
     } catch (error) {
       const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
@@ -128,7 +91,7 @@ const ChatBot: React.FC = () => {
         text: "Sorry, I lost connection to the AI engine. Please check your internet or try again later.",
         timestamp: new Date()
       };
-      setMessages(prev => [...prev, errorMsg]);
+      onUpdateMessages(prev => [...prev, errorMsg]);
     } finally {
       setIsLoading(false);
     }
@@ -142,21 +105,13 @@ const ChatBot: React.FC = () => {
   };
 
   const resetChat = () => {
-    try {
-      if (!geminiApiKey) {
-        console.error("Cannot reset chat: Gemini API key not available");
-        return;
-      }
-      chatSessionRef.current = createChatSession(geminiApiKey);
-      setMessages([{
-        id: Date.now().toString(),
-        role: 'model',
-        text: 'Chat history cleared. What else would you like to know?',
-        timestamp: new Date()
-      }]);
-    } catch (e) {
-      console.error(e);
-    }
+    chatHistoryRef.current = [];
+    onUpdateMessages([{
+      id: Date.now().toString(),
+      role: 'model',
+      text: 'Chat history cleared. What else would you like to know?',
+      timestamp: new Date()
+    }]);
   };
 
   return (
@@ -204,7 +159,7 @@ const ChatBot: React.FC = () => {
             `}>
               <div className="whitespace-pre-wrap">{msg.text}</div>
               <div className={`text-[10px] mt-2 font-bold uppercase tracking-widest opacity-40 ${msg.role === 'user' ? 'text-indigo-100' : 'text-slate-400'}`}>
-                {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {msg.timestamp.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })}
               </div>
             </div>
           </div>
@@ -225,14 +180,15 @@ const ChatBot: React.FC = () => {
 
       {/* Input Composer */}
       <div className="p-5 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 shrink-0">
-        <div className="flex items-end gap-3 relative max-w-4xl mx-auto">
+        <div className="flex items-center gap-3 relative w-full max-w-7xl mx-auto">
           <div className="relative flex-1">
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask about Tally, GST, or specific transaction mappings..."
-              className="w-full pl-5 pr-12 py-4 bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none resize-none max-h-48 min-h-[56px] scrollbar-hide dark:text-white shadow-inner transition-all"
+              className="w-full pl-6 pr-14 py-5 bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl text-base focus:ring-2 focus:ring-indigo-500 outline-none resize-none min-h-[64px] overflow-hidden scrollbar-hide dark:text-white shadow-inner transition-all"
               rows={1}
             />
             <div className="absolute left-0 bottom-full mb-2 w-full flex justify-center pointer-events-none">
@@ -244,14 +200,12 @@ const ChatBot: React.FC = () => {
           <button
             onClick={handleSend}
             disabled={!input.trim() || isLoading}
-            className="p-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-xl shadow-indigo-600/20 active:scale-95 flex-shrink-0 mb-1"
+            className="p-5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-xl shadow-indigo-600/20 active:scale-95 flex-shrink-0"
           >
             <Send className="w-5 h-5" />
           </button>
         </div>
         <div className="text-[10px] text-center text-slate-400 font-bold uppercase tracking-widest mt-4">
-          <MessageSquare className="w-3 h-3 inline mr-1 mb-0.5 opacity-50" />
-          Expert System • Accounting Domain Specific
         </div>
       </div>
     </div>

@@ -1,31 +1,38 @@
 
 import React, { useState, useEffect } from 'react';
 import InvoiceEditor from './components/InvoiceEditor';
-import XmlViewer from './components/XmlViewer';
-import JsonViewer from './components/JsonViewer';
 import TallyLogs from './components/TallyLogs';
 import Dashboard from './components/Dashboard';
 import InvoiceUpload from './components/InvoiceUpload';
 import ChatBot from './components/ChatBot';
-import ImageAnalyzer from './components/ImageAnalyzer';
 import BankStatementManager from './components/BankStatementManager';
 import ExcelImportManager from './components/ExcelImportManager';
 import Navbar from './components/Navbar';
 import InvalidFileModal from './components/InvalidFileModal';
 import SettingsModal from './components/SettingsModal';
 import AuthScreen from './components/AuthScreen';
-import { InvoiceData, LogEntry, AppView, ProcessedFile } from './types';
-import { ArrowRight, Loader2, CheckCircle2, X, FileText, AlertTriangle } from 'lucide-react';
-import { generateTallyXml, pushToTally, fetchExistingLedgers, checkTallyConnection } from './services/tallyService';
-import { parseInvoiceWithGemini } from './services/geminiService';
-import { getGeminiApiKey } from './services/backendService';
-import { saveLogToDB, saveInvoiceToDB } from './services/dbService';
+import { InvoiceData, LogEntry, AppView, ProcessedFile, Message } from './types';
+import { ArrowRight, CheckCircle2, X, FileText, AlertTriangle, CloudUpload, LayoutDashboard } from 'lucide-react';
+import { checkTallyConnection, fetchExistingLedgers, generateTallyXml, pushToTally } from './services/tallyService';
+import { processDocumentWithAI } from './services/backendService';
+import { saveInvoiceToDB, saveLogToDB } from './services/dbService';
 import { TALLY_API_URL, EMPTY_INVOICE, BACKEND_API_KEY } from './constants';
 import { v4 as uuidv4 } from 'uuid';
+
 
 const App: React.FC = () => {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [currentView, setCurrentView] = useState<AppView>(AppView.DASHBOARD);
+
+    // Chat State (Persists on Navigation, Clears on Refresh)
+    const [chatMessages, setChatMessages] = useState<Message[]>([
+        {
+            id: '1',
+            role: 'model',
+            text: 'Hello! I am your AutoTally Assistant. I specialize in Tally Prime XML, Indian GST laws, and accounting automation. How can I help you today?',
+            timestamp: new Date()
+        }
+    ]);
 
     // Bulk Processing State
     const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]);
@@ -39,6 +46,7 @@ const App: React.FC = () => {
 
     // Redirect Logic
     const [pendingBankStatementFile, setPendingBankStatementFile] = useState<File | null>(null);
+    const [pendingExcelFile, setPendingExcelFile] = useState<ProcessedFile | null>(null);
     const [mismatchedFileAlert, setMismatchedFileAlert] = useState<{ show: boolean, file: ProcessedFile | null }>({ show: false, file: null });
 
     // Invalid File Alert
@@ -63,10 +71,7 @@ const App: React.FC = () => {
     });
 
     // Tally Status
-    const [tallyStatus, setTallyStatus] = useState<{ online: boolean; msg: string; activeCompany?: string }>({ online: false, msg: 'Connecting...' });
-
-    // Gemini API Key
-    const [geminiApiKey, setGeminiApiKey] = useState<string | null>(null);
+    const [tallyStatus, setTallyStatus] = useState<{ online: boolean; info: string; mode: 'full' | 'blind' | 'none'; activeCompany?: string }>({ online: false, info: 'Connecting...', mode: 'none' });
 
     useEffect(() => {
         if (darkMode) {
@@ -88,23 +93,13 @@ const App: React.FC = () => {
     useEffect(() => {
         if (isAuthenticated) {
             checkStatus();
-            // Fetch Gemini API key from backend
-            fetchGeminiKey();
         }
     }, [isAuthenticated]);
 
-    const fetchGeminiKey = async () => {
-        try {
-            const result = await getGeminiApiKey(BACKEND_API_KEY);
-            if (result.success && result.geminiApiKey) {
-                setGeminiApiKey(result.geminiApiKey);
-            } else {
-                console.error("Failed to fetch Gemini API key:", result.message);
-            }
-        } catch (error) {
-            console.error("Error fetching Gemini API key:", error);
-        }
-    };
+    // Auto-scroll to top when view changes
+    useEffect(() => {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }, [currentView]);
 
     // Sync currentInvoice
     useEffect(() => {
@@ -129,11 +124,12 @@ const App: React.FC = () => {
     }, [currentView, processedFiles, currentInvoice, currentFile]);
 
     const checkStatus = async () => {
-        setTallyStatus({ online: false, msg: 'Checking...' });
+        setTallyStatus({ online: false, info: 'Checking...', mode: 'none' });
         const status = await checkTallyConnection();
         setTallyStatus({
             online: status.online,
-            msg: status.msg,
+            info: status.info,
+            mode: status.mode,
             activeCompany: status.activeCompany
         });
     };
@@ -172,7 +168,20 @@ const App: React.FC = () => {
     };
 
     const handleUpdateFile = (id: string, updates: Partial<ProcessedFile>) => {
-        setProcessedFiles(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
+        setProcessedFiles(prev => prev.map(f => {
+            if (f.id === id) {
+                const updatedFile = { ...f, ...updates };
+                
+                // Auto-navigate to Dashboard ONLY for OCR_INVOICE processing
+                // Prevent redirect for Bank Statements or Excel Imports so user can edit them
+                if ((updates.status === 'Success' || updates.status === 'Failed') && f.sourceType === 'OCR_INVOICE') {
+                    setTimeout(() => setCurrentView(AppView.DASHBOARD), 100);
+                }
+                
+                return updatedFile;
+            }
+            return f;
+        }));
     };
 
     const calculateEntryStats = (data: InvoiceData) => {
@@ -202,14 +211,21 @@ const App: React.FC = () => {
         }
     };
 
-    const processSingleFile = async (entry: ProcessedFile) => {
-        setProcessedFiles(prev => prev.map(f => f.id === entry.id ? { ...f, status: 'Processing' } : f));
+    const processSingleFile = async (entry: ProcessedFile, retryCount = 0) => {
+        if (retryCount === 0) {
+            setProcessedFiles(prev => prev.map(f => f.id === entry.id ? { ...f, status: 'Processing' } : f));
+        }
+
         const start = Date.now();
         try {
-            if (!geminiApiKey) {
-                throw new Error("Gemini API key not available");
+            if (!isAuthenticated) {
+                throw new Error("User not authenticated");
             }
-            const data = await parseInvoiceWithGemini(entry.file, geminiApiKey);
+            const result = await processDocumentWithAI(entry.file, BACKEND_API_KEY);
+            if (!result.success || !result.invoice) {
+                throw new Error(result.message || 'Failed to process document');
+            }
+            const data = result.invoice;
 
             if (data.documentType === 'BANK_STATEMENT') {
                 setProcessedFiles(prev => prev.map(f => f.id === entry.id ? { ...f, status: 'Mismatch', error: "Detected as Bank Statement" } : f));
@@ -244,6 +260,13 @@ const App: React.FC = () => {
             if (errorMsg.includes("The document has no pages")) {
                 errorMsg = "Empty or Corrupted File";
                 setInvalidFileAlert({ show: true, fileName: entry.fileName, reason: "File empty/corrupted." });
+            }
+
+            if (retryCount < 2) {
+                // Retry Logic
+                console.log(`Retrying ${entry.fileName}... Attempt ${retryCount + 1}`);
+                setTimeout(() => processSingleFile(entry, retryCount + 1), 2000);
+                return;
             }
 
             setProcessedFiles(prev => prev.map(f => f.id === entry.id ? { ...f, status: 'Failed', error: errorMsg, timeTaken: `${duration} min` } : f));
@@ -286,15 +309,23 @@ const App: React.FC = () => {
             setMismatchedFileAlert({ show: true, file });
             return;
         }
+
+        // Bank Statement - navigate to view/edit
         if (file.sourceType === 'BANK_STATEMENT') {
             setCurrentView(AppView.BANK_STATEMENT);
+            // Always set the file so it can be viewed, even if failed
             setPendingBankStatementFile(file.file);
             return;
         }
+
+        // Excel Import - navigate and the file will be picked up by ExcelImportManager
         if (file.sourceType === 'EXCEL_IMPORT') {
             setCurrentView(AppView.EXCEL_IMPORT);
+            setPendingExcelFile(file); // Store the clicked file
             return;
         }
+
+        // Invoice - load data into editor
         if (file.data) {
             setCurrentInvoice(file.data);
             setCurrentFile(file.file);
@@ -397,9 +428,31 @@ const App: React.FC = () => {
     };
 
     const handleDownload = (file: ProcessedFile) => {
-        if (!file.data) return;
-        const reportText = JSON.stringify(file.data, null, 2);
-        const blob = new Blob([reportText], { type: 'text/plain' });
+        const dataToDownload = file.data || file.bankData || file.excelData;
+        
+        if (!dataToDownload) {
+            // Fallback: Download metadata if no structured data exists
+            const metadata = {
+                fileName: file.fileName,
+                status: file.status,
+                error: file.error || undefined,
+                uploadTimestamp: new Date(file.uploadTimestamp).toISOString()
+            };
+            const reportText = JSON.stringify(metadata, null, 2);
+            const blob = new Blob([reportText], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${file.fileName.split('.')[0]}_metadata.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            return;
+        }
+
+        const reportText = JSON.stringify(dataToDownload, null, 2);
+        const blob = new Blob([reportText], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -408,6 +461,38 @@ const App: React.FC = () => {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+    };
+
+    const handleDownloadAll = () => {
+        if (filteredFiles.length === 0) {
+            setToast({ show: true, message: "No files to download" });
+            return;
+        }
+
+        const reportData = filteredFiles.map(f => ({
+            fileName: f.fileName,
+            status: f.status,
+            sourceType: f.sourceType,
+            data: f.data || f.bankData || f.excelData || { error: "No structured data available" },
+            metadata: {
+                error: f.error,
+                timeTaken: f.timeTaken,
+                uploadTime: new Date(f.uploadTimestamp).toISOString()
+            }
+        }));
+
+        const reportText = JSON.stringify(reportData, null, 2);
+        const blob = new Blob([reportText], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = `autotally_export_${timestamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setToast({ show: true, message: `Exported ${filteredFiles.length} files` });
     };
 
     const handleLock = () => {
@@ -431,6 +516,12 @@ const App: React.FC = () => {
             if (filterStatus === 'Bank') matchesFilter = f.sourceType === 'BANK_STATEMENT';
             if (filterStatus === 'Excel') matchesFilter = f.sourceType === 'EXCEL_IMPORT';
         }
+        else {
+            if (filterStatus === 'Sales') matchesFilter = f.sourceType === 'OCR_INVOICE' && f.data?.voucherType === 'Sales';
+            if (filterStatus === 'Purchase') matchesFilter = f.sourceType === 'OCR_INVOICE' && f.data?.voucherType === 'Purchase';
+            if (filterStatus === 'Bank Statement') matchesFilter = f.sourceType === 'BANK_STATEMENT';
+            if (filterStatus === 'Excel') matchesFilter = f.sourceType === 'EXCEL_IMPORT';
+        }
         return matchesSearch && matchesFilter;
     });
 
@@ -451,6 +542,7 @@ const App: React.FC = () => {
                 onSearchChange={setSearchTerm}
                 filterStatus={filterStatus}
                 onFilterChange={setFilterStatus}
+                onDownloadAll={handleDownloadAll}
             />
         );
         if (currentView === AppView.UPLOAD) return (
@@ -473,10 +565,60 @@ const App: React.FC = () => {
         if (currentView === AppView.EDITOR) {
             // Logic Fix: Ensure we show Editor if currentFile is present, even if processing
             if (!currentFile) return (
-                <div className="h-full flex flex-col items-center justify-center text-slate-400">
-                    <FileText className="w-16 h-16 mb-4 opacity-50" />
-                    <p>No Invoice Selected</p>
-                    <button onClick={() => setCurrentView(AppView.DASHBOARD)} className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded">Go to Dashboard</button>
+                <div className="flex flex-col h-full items-center justify-center p-8 animate-fade-in">
+                    <div className="w-full max-w-4xl mx-auto flex flex-col items-center">
+                        {/* Header Section */}
+                        <div className="mb-12 flex flex-col items-center text-center">
+                            <div className="w-16 h-16 bg-indigo-50 dark:bg-indigo-600/20 rounded-2xl flex items-center justify-center mb-6 border border-indigo-200 dark:border-indigo-500/30">
+                                <FileText className="w-8 h-8 text-indigo-600 dark:text-indigo-400" />
+                            </div>
+                            <h1 className="text-4xl font-bold text-slate-900 dark:text-white mb-4 tracking-tight">No Invoices Uploaded</h1>
+                            <p className="text-slate-500 dark:text-slate-400 text-lg max-w-xl leading-relaxed">
+                                Extract, verify, and synchronize your tax documents with Tally Prime.
+                                Start by selecting an existing invoice or uploading a new one.
+                            </p>
+                        </div>
+
+                        {/* Action Cards Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-3xl">
+
+                            {/* Card 1: Process New */}
+                            <button
+                                onClick={() => setCurrentView(AppView.UPLOAD)}
+                                className="group flex flex-col p-8 bg-white dark:bg-slate-900/50 hover:bg-slate-50 dark:hover:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500/50 rounded-3xl transition-all duration-300 text-left relative overflow-hidden hover:shadow-2xl hover:shadow-indigo-500/10"
+                            >
+                                <div className="w-12 h-12 bg-indigo-50 dark:bg-indigo-500/10 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
+                                    <CloudUpload className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+                                </div>
+                                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 uppercase tracking-wide text-sm">PROCESS NEW</h3>
+                                <p className="text-slate-500 dark:text-slate-400 text-sm leading-relaxed">
+                                    Upload PDFs or images for AI OCR extraction.
+                                </p>
+                                <div className="absolute top-8 right-8 opacity-0 group-hover:opacity-100 transition-opacity transform translate-x-2 group-hover:translate-x-0">
+                                    <ArrowRight className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                                </div>
+                            </button>
+
+                            {/* Card 2: Go to Dashboard */}
+                            <button
+                                onClick={() => setCurrentView(AppView.DASHBOARD)}
+                                className="group flex flex-col p-8 bg-white dark:bg-slate-900/50 hover:bg-slate-50 dark:hover:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-emerald-500 dark:hover:border-emerald-500/50 rounded-3xl transition-all duration-300 text-left relative overflow-hidden hover:shadow-2xl hover:shadow-emerald-500/10"
+                            >
+                                <div className="w-12 h-12 bg-emerald-50 dark:bg-emerald-500/10 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
+                                    <LayoutDashboard className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+                                </div>
+                                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 uppercase tracking-wide text-sm">GO TO DASHBOARD</h3>
+                                <p className="text-slate-500 dark:text-slate-400 text-sm leading-relaxed">
+                                    View all processed and pending documents.
+                                </p>
+                                <div className="absolute top-8 right-8 opacity-0 group-hover:opacity-100 transition-opacity transform translate-x-2 group-hover:translate-x-0">
+                                    <ArrowRight className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                                </div>
+                            </button>
+
+                        </div>
+
+                    </div>
                 </div>
             );
 
@@ -488,13 +630,8 @@ const App: React.FC = () => {
 
             return (
                 <div className="h-full flex flex-col">
-                    <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 p-2 flex gap-2">
-                        <button onClick={() => setActiveTab('editor')} className={`px-4 py-1 rounded ${activeTab === 'editor' ? 'bg-indigo-100 text-indigo-700' : ''}`}>Editor</button>
-                        <button onClick={() => setActiveTab('xml')} className={`px-4 py-1 rounded ${activeTab === 'xml' ? 'bg-indigo-100 text-indigo-700' : ''}`}>XML</button>
-                        <button onClick={() => setActiveTab('json')} className={`px-4 py-1 rounded ${activeTab === 'json' ? 'bg-indigo-100 text-indigo-700' : ''}`}>JSON</button>
-                    </div>
                     <div className="flex-1 overflow-hidden">
-                        {activeTab === 'editor' && <InvoiceEditor
+                        <InvoiceEditor
                             data={displayData}
                             file={currentFile}
                             onSave={handleSaveInvoice}
@@ -504,29 +641,39 @@ const App: React.FC = () => {
                             currentIndex={currentIndex} totalCount={totalInvoices}
                             onNext={() => handleNavigateInvoice('next')} onPrev={() => handleNavigateInvoice('prev')}
                             hasNext={currentIndex < processedFiles.length - 1} hasPrev={currentIndex > 0}
-                        />}
-                        {activeTab === 'xml' && <XmlViewer data={displayData} />}
-                        {activeTab === 'json' && <JsonViewer data={displayData} />}
+                        />
                     </div>
                 </div>
             );
         }
         if (currentView === AppView.BANK_STATEMENT) return (
             <BankStatementManager
-                onPushLog={handlePushLog} externalFile={pendingBankStatementFile} onRedirectToInvoice={handleRedirectToInvoice}
+                onPushLog={handlePushLog} externalFile={pendingBankStatementFile} externalData={processedFiles.find(f => f.sourceType === 'BANK_STATEMENT' && f.bankData)?.bankData || null} onRedirectToInvoice={handleRedirectToInvoice}
                 onRegisterFile={(f) => handleRegisterFile(f, 'BANK_STATEMENT')}
                 onUpdateFile={handleUpdateFile}
             />
         );
-        if (currentView === AppView.EXCEL_IMPORT) return (
-            <ExcelImportManager
-                onPushLog={handlePushLog}
-                onRegisterFile={(f) => handleRegisterFile(f, 'EXCEL_IMPORT')}
-                onUpdateFile={handleUpdateFile}
+        if (currentView === AppView.EXCEL_IMPORT) {
+            // Use the pending Excel file or find one with data
+            const excelFile = pendingExcelFile || processedFiles.find(f => f.sourceType === 'EXCEL_IMPORT' && f.excelData);
+            return (
+                <ExcelImportManager
+                    onPushLog={handlePushLog}
+                    onRegisterFile={(f) => handleRegisterFile(f, 'EXCEL_IMPORT')}
+                    onUpdateFile={handleUpdateFile}
+                    externalFile={excelFile?.file || null}
+                    externalFileId={excelFile?.id || null}
+                    externalMappedData={excelFile?.excelData || null}
+                    externalMapping={excelFile?.excelMapping || null}
+                />
+            );
+        }
+        if (currentView === AppView.CHAT) return (
+            <ChatBot
+                messages={chatMessages}
+                onUpdateMessages={setChatMessages}
             />
         );
-        if (currentView === AppView.CHAT) return <ChatBot />;
-        if (currentView === AppView.IMAGE_ANALYSIS) return <ImageAnalyzer />;
         if (currentView === AppView.LOGS) return <TallyLogs logs={logs} />;
         return null;
     };
@@ -583,7 +730,7 @@ const App: React.FC = () => {
                 tallyStatus={tallyStatus} onCheckStatus={checkStatus} searchTerm={searchTerm} onSearchChange={setSearchTerm} onOpenSettings={() => setIsSettingsOpen(true)}
                 onLock={handleLock}
             />
-            <main className="flex-1 overflow-hidden relative p-4 md:p-6 lg:p-8">
+            <main className="flex-1 overflow-auto relative p-6">
                 {renderContent()}
                 {toast.show && (
                     <div className="fixed bottom-6 right-6 z-[100] animate-fade-in bg-white dark:bg-slate-800 border-l-4 border-green-500 shadow-xl rounded-lg p-4 flex items-center gap-3 pr-8 min-w-[300px]">

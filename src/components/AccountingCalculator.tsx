@@ -48,11 +48,84 @@ const AccountingCalculator: React.FC<CalculatorProps> = ({ onClose }) => {
     });
   };
 
+  const safeEvaluate = (expression: string): number => {
+    // Remove all whitespace
+    const expr = expression.replace(/\s+/g, '');
+    if (!expr) return 0;
+    
+    // Check for invalid characters (security check)
+    if (/[^0-9+\-*/().]/.test(expr)) return 0;
+
+    // Tokenizer
+    const tokens: string[] = [];
+    let numberBuffer = '';
+    
+    for (let i = 0; i < expr.length; i++) {
+      const char = expr[i];
+      if (/[0-9.]/.test(char)) {
+        numberBuffer += char;
+      } else {
+        if (numberBuffer) {
+          tokens.push(numberBuffer);
+          numberBuffer = '';
+        }
+        tokens.push(char);
+      }
+    }
+    if (numberBuffer) tokens.push(numberBuffer);
+
+    // Parser (Recursive Descent)
+    let pos = 0;
+
+    const parseFactor = (): number => {
+      if (pos >= tokens.length) return 0;
+      const token = tokens[pos];
+      
+      if (token === '(') {
+        pos++;
+        const result = parseExpression();
+        pos++; // consume ')'
+        return result;
+      }
+      
+      pos++;
+      return parseFloat(token);
+    };
+
+    const parseTerm = (): number => {
+      let result = parseFactor();
+      while (pos < tokens.length && (tokens[pos] === '*' || tokens[pos] === '/')) {
+        const op = tokens[pos];
+        pos++;
+        const right = parseFactor();
+        if (op === '*') result *= right;
+        else if (right !== 0) result /= right;
+      }
+      return result;
+    };
+
+    const parseExpression = (): number => {
+      let result = parseTerm();
+      while (pos < tokens.length && (tokens[pos] === '+' || tokens[pos] === '-')) {
+        const op = tokens[pos];
+        pos++;
+        const right = parseTerm();
+        if (op === '+') result += right;
+        else result -= right;
+      }
+      return result;
+    };
+
+    return parseExpression();
+  };
+
   const calculate = () => {
     try {
       const fullExp = expression + display;
-      // eslint-disable-next-line no-eval
-      const result = eval(fullExp.replace(/x/g, '*')); // Careful with eval, but strictly controlled inputs here
+      // Sanitize expression to only allow numbers and operators
+      const sanitizedExp = fullExp.replace(/x/g, '*').replace(/[^-()\d/*+.]/g, '');
+      
+      const result = safeEvaluate(sanitizedExp);
       const resultStr = parseFloat(result.toFixed(2)).toString();
       
       addToHistory(`${fullExp} = ${resultStr}`);

@@ -8,6 +8,7 @@ export interface LineItem {
   amount: number; // Taxable Value
   gstRate: number; // e.g., 18
   unit?: string; // e.g., Nos, Kg, Box
+  isIGST?: boolean; // Optional: Force IGST even when GSTIN is not available
 }
 
 export interface InvoiceData {
@@ -37,10 +38,12 @@ export interface BankTransaction {
 export interface ExcelVoucherItem {
   amount: number;
   taxRate: number;
+  quantity?: number;
   ledgerName?: string;
   cgst?: number;
   sgst?: number;
   igst?: number;
+  cess?: number; // Added
 }
 
 export interface ExcelVoucher {
@@ -51,25 +54,29 @@ export interface ExcelVoucher {
   gstin: string;
   voucherType: 'Sales' | 'Purchase';
   items: ExcelVoucherItem[];
-  totalAmount: number; // Verification total
+  totalAmount: number;
   narration?: string;
+  period?: string; // Added
+  reverseCharge?: string; // Added
 }
 
 export interface BankStatementData {
   documentType?: 'INVOICE' | 'BANK_STATEMENT'; // Classification flag
   bankName: string; // My Bank Ledger Name in Tally
+  accountNumber?: string; // Last 4 digits of account number
   transactions: BankTransaction[];
 }
 
 export interface ProcessedFile {
   id: string;
   file: File;
-  status: 'Pending' | 'Processing' | 'Ready' | 'Success' | 'Failed' | 'Mismatch'; 
+  status: 'Pending' | 'Processing' | 'Ready' | 'Success' | 'Failed' | 'Mismatch';
   fileName: string;
   sourceType: 'OCR_INVOICE' | 'BANK_STATEMENT' | 'EXCEL_IMPORT'; // NEW: Track source
   data?: InvoiceData;
   bankData?: BankStatementData; // NEW: Store Bank Data
-  excelSummary?: { vouchers: number }; // NEW: Store Excel Stats
+  excelData?: ExcelVoucher[]; // NEW: Store full Excel voucher data
+  excelMapping?: any; // NEW: Store Excel column mapping configuration
   error?: string;
   correctEntries: number;
   incorrectEntries: number;
@@ -92,9 +99,11 @@ export interface TallyResponse {
   message: string;
 }
 
-export interface AISettings {
-  apiKey: string;
-  model: string;
+export interface Message {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  timestamp: Date;
 }
 
 export enum AppView {
