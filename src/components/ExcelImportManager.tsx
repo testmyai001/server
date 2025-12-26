@@ -572,7 +572,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
             v.totalAmount += lineTotal; // keep raw total ONLY
         });
 
-        // Calculate Round Off
+        // Calculate Round Off (Pattern B: Send Rounded Total to Tally)
         Array.from(groupedMap.values()).forEach(v => {
             const actualTotal = v.items.reduce((acc, item) => {
                 return acc
@@ -587,8 +587,10 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
             const roundOff = +(roundedTotal - actualTotal).toFixed(2);
 
             v.roundOff = roundOff;        // separate ledger
-            v.totalAmount = roundedTotal; // party ledger
+            v.totalAmount = roundedTotal; // party ledger (integer)
         });
+
+
 
 
         const vouchers = Array.from(groupedMap.values());

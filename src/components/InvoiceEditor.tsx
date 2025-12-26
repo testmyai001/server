@@ -247,7 +247,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
             totalTaxable += amount;
 
             const gst = Number(item.gstRate) || 0;
-            const lineTax = round(amount * gst / 100);
+            const lineTax = amount * gst / 100; // NO ROUND
             totalTax += lineTax;
 
             if (gst > 0) {
@@ -257,26 +257,34 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                 if (itemIsInterState) {
                     totalIGST += lineTax;
                 } else {
-                    const half = round(lineTax / 2);
-                    const otherHalf = round(lineTax - half);
+                    const half = lineTax / 2;
                     totalCGST += half;
-                    totalSGST += otherHalf;
+                    totalSGST += half;
                 }
             }
         });
 
-        const safeTaxable = round(totalTaxable);
-        const safeTax = round(totalTax);
-        const safeGrand = round(safeTaxable + safeTax);
+        const actualGrand = totalTaxable + totalTax;
+        const roundedGrand = Math.round(actualGrand);
+        const roundOff = +(roundedGrand - actualGrand).toFixed(2);
+
 
         setTotals({
-            taxable: safeTaxable,
-            tax: safeTax,
+            taxable: totalTaxable,
+            tax: totalTax,
             cgst: totalCGST,
             sgst: totalSGST,
             igst: totalIGST,
-            grand: safeGrand
+            roundOff,
+            grand: roundedGrand
         });
+
+        setFormData(prev => ({
+            ...prev,
+            roundOff,
+            grandTotal: roundedGrand
+        }));
+
     }, [formData.lineItems, useInterState]);
 
     const handleChange = (field: keyof InvoiceData, value: string) => {
@@ -291,7 +299,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                 const updated = { ...item, [field]: value };
                 if (field === 'quantity' || field === 'rate') {
                     const rawAmount = Number(updated.quantity) * Number(updated.rate);
-                    updated.amount = round(rawAmount);
+                    updated.amount = rawAmount; // keep full precision
                 }
                 return updated;
             })

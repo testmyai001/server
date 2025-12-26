@@ -22,6 +22,8 @@ export interface InvoiceData {
   voucherType: 'Sales' | 'Purchase';
   targetCompany?: string; // Target Tally Company for import
   lineItems: LineItem[];
+  roundOff?: number; // Added for rounding
+  grandTotal?: number; // Added for rounded total
 }
 
 export interface BankTransaction {
