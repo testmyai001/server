@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FileSpreadsheet, ArrowRight, Loader2, CheckCircle2, AlertTriangle, Merge, Database, ListPlus, RefreshCw, Play, Building2, UploadCloud, ChevronDown } from 'lucide-react';
+import { FileSpreadsheet, ArrowRight, ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Merge, Database, ListPlus, RefreshCw, Play, Building2, UploadCloud, ChevronDown } from 'lucide-react';
 import { read, utils } from 'xlsx';
 import { ExcelVoucher, ProcessedFile } from '../types';
-import { generateBulkExcelXml, pushToTally, fetchExistingLedgers, analyzeLedgerRequirements, fetchOpenCompanies } from '../services/tallyService';
+import { generateBulkExcelXml, pushToTally, fetchExistingLedgers, analyzeLedgerRequirements, fetchOpenCompanies, checkTallyConnection, tallyRound } from '../services/tallyService';
 import { v4 as uuidv4 } from 'uuid';
+import TallyDisconnectedModal from './TallyDisconnectedModal';
+
 
 interface ExcelImportManagerProps {
     onPushLog: (status: 'Success' | 'Failed', message: string, response?: string) => void;
@@ -13,6 +15,7 @@ interface ExcelImportManagerProps {
     externalFileId?: string | null; // File ID from dashboard
     externalMappedData?: ExcelVoucher[] | null; // Pre-loaded mapped data
     externalMapping?: any; // Pre-loaded column mapping
+    onDelete?: (id?: string) => void;
 }
 
 // Precision Helper
@@ -20,7 +23,7 @@ const round = (num: number): number => {
     return Math.round((num + Number.EPSILON) * 100) / 100;
 };
 
-const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRegisterFile, onUpdateFile, externalFile, externalFileId, externalMappedData, externalMapping }) => {
+const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRegisterFile, onUpdateFile, externalFile, externalFileId, externalMappedData, externalMapping, onDelete }) => {
     const [step, setStep] = useState<1 | 2 | 3>(1);
     const [file, setFile] = useState<File | null>(null);
     const [fileId, setFileId] = useState<string | null>(null);
@@ -60,6 +63,20 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
     });
 
     const BATCH_SIZE = 100;
+
+    // Filter out empty/undefined columns AND unwanted GSTR filing-related columns
+    const excludedKeywords = [
+        'gstr3b', 'gstr-1/5', 'gstr1/5', 'gstr 1/5', 'filling status', 'filing status',
+        'filling date', 'filing date', 'filling period', 'filing period',
+        'tax period in which amended', 'amendment type', 'e-invoice applicable',
+        'einvoice applicable', 'e invoice applicable'
+    ];
+    const visibleColumns = allColumns.filter(col => {
+        if (col === null || col === undefined || col === '' || String(col).trim() === '') return false;
+        const colLower = String(col).toLowerCase();
+        // Exclude if column name contains any of the excluded keywords
+        return !excludedKeywords.some(keyword => colLower.includes(keyword));
+    });
 
     useEffect(() => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -138,8 +155,17 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                             if ((c.includes('sgst') || c.includes('state') || c.includes('utgst')) && !c.includes('rate') && !c.includes('filing')) guess.sgst = col;
                             // CESS
                             if (c.includes('cess') && !c.includes('rate') && !c.includes('filing')) guess.cess = col;
-                            // Period - exact match and partial match
-                            if (c === 'period' || (c.includes('period') && !c.includes('filing'))) guess.period = col;
+                            // Period - Prioritize exact matches
+                            if (c === 'period' || c === 'return period') {
+                                guess.period = col;
+                            } else if ((c.includes('period') && !c.includes('filing'))) {
+                                // Only set partial match if we haven't found an exact match yet
+                                // Check if current guess is already an exact match, if so, preserve it
+                                const currentGuess = guess.period ? guess.period.toLowerCase().trim() : '';
+                                if (currentGuess !== 'period' && currentGuess !== 'return period') {
+                                    guess.period = col;
+                                }
+                            }
                             // Reverse Charge
                             if (c.includes('reverse') || c.includes('rcm')) guess.reverseCharge = col;
                             // Quantity
@@ -366,9 +392,22 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                             if (!guess.rate) guess.rate = col;
                         }
 
-                        // Other Fields
-                        // Period Field - exact match and partial match
-                        if (c === 'period' || (c.includes('period') && !c.includes('filing'))) guess.period = col;
+                        // Period Field - Enhanced detection with priority
+                        if (c === 'period' || c === 'return period') {
+                            guess.period = col;
+                        } else if ((c.includes('period') && !c.includes('filing'))) {
+                            // Only overwrite if previous guess wasn't an exact match
+                            const currentGuess = guess.period ? guess.period.toLowerCase().trim() : '';
+                            if (currentGuess !== 'period' && currentGuess !== 'return period') {
+                                guess.period = col;
+                            }
+                        }
+
+                        // Place of Supply / State detection
+                        if (c === 'place of supply' || c === 'pos' || c === 'state' || c === 'state name' || c === 'pos state') {
+                            guess.placeOfSupply = col;
+                        }
+
                         if (c.includes('reverse') || c.includes('rcm')) guess.reverseCharge = col;
 
                         // Invoice Date - map to date field (improved detection for new Excel formats)
@@ -415,10 +454,34 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
         }
     };
 
+    const [notificationMessage, setNotificationMessage] = useState<string>('');
+
     const processMapping = () => {
-        if (!mapping.voucherType) {
+        const requiredFields = [
+            { key: 'date', label: 'Invoice Date' },
+            { key: 'invoiceNo', label: 'Invoice Number' },
+            { key: 'partyName', label: 'Party Name' },
+            { key: 'amount', label: 'Taxable Value / Amount' },
+            { key: 'taxRate', label: 'Tax Rate' },
+            { key: 'voucherType', label: 'Voucher Type' },
+            { key: 'period', label: 'Return Period' }
+        ];
+
+        // Strict Check: Ensure value is not null/undefined AND not just whitespace
+        const missing = requiredFields.filter(field => {
+            const val = mapping[field.key as keyof typeof mapping];
+            if (!val || val.trim() === '') return true;
+            if (field.key === 'voucherType') return false; // Handled separately
+            // Ghost Value Check: Value must be in visibleColumns (prevent mapped but hidden excluded columns)
+            return !visibleColumns.includes(val);
+        });
+
+        if (missing.length > 0) {
+            const missingLabels = missing.map(m => m.label).join(', ');
+
+            setNotificationMessage(`Please manual select the following columns: ${missingLabels}`);
             setShowNotification(true);
-            setTimeout(() => setShowNotification(false), 3000);
+            setTimeout(() => setShowNotification(false), 5000);
             return;
         }
 
@@ -471,7 +534,8 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 sgst: parseNum(val(mapping.sgst)),
                 cess: parseNum(val(mapping.cess)),
                 period: String(val(mapping.period) || ''),
-                reverseCharge: String(val(mapping.reverseCharge) || '')
+                reverseCharge: String(val(mapping.reverseCharge) || ''),
+                placeOfSupply: String(val(mapping.placeOfSupply) || '').trim()
             };
         }).filter(t => (t.amount !== 0 || t.totalAmount !== 0) && t.invoiceNo !== '');
 
@@ -483,7 +547,8 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     id: uuidv4(), date: row.date, invoiceNo: row.invoiceNo, partyName: row.partyName,
                     gstin: row.gstin, voucherType: row.voucherType, items: [], totalAmount: 0,
                     period: row.period,
-                    reverseCharge: row.reverseCharge
+                    reverseCharge: row.reverseCharge,
+                    placeOfSupply: row.placeOfSupply
                 });
             }
             const v = groupedMap.get(key)!;
@@ -496,9 +561,35 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 sgst: row.sgst,
                 cess: row.cess
             });
-            const lineTotal = row.amount + (row.igst || 0) + (row.cgst || 0) + (row.sgst || 0) + (row.cess || 0);
-            v.totalAmount = round(v.totalAmount + (row.totalAmount > 0 ? row.totalAmount : lineTotal));
+            // ✅ CORRECT — do NOT round here
+            const lineTotal =
+                row.amount +
+                (row.igst || 0) +
+                (row.cgst || 0) +
+                (row.sgst || 0) +
+                (row.cess || 0);
+
+            v.totalAmount += lineTotal; // keep raw total ONLY
         });
+
+        // Calculate Round Off
+        Array.from(groupedMap.values()).forEach(v => {
+            const actualTotal = v.items.reduce((acc, item) => {
+                return acc
+                    + item.amount
+                    + (item.igst || 0)
+                    + (item.cgst || 0)
+                    + (item.sgst || 0)
+                    + (item.cess || 0);
+            }, 0);
+
+            const roundedTotal = Math.round(actualTotal);
+            const roundOff = +(roundedTotal - actualTotal).toFixed(2);
+
+            v.roundOff = roundOff;        // separate ledger
+            v.totalAmount = roundedTotal; // party ledger
+        });
+
 
         const vouchers = Array.from(groupedMap.values());
         setMappedData(vouchers);
@@ -507,14 +598,22 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
         if (onUpdateFile && fileId) onUpdateFile(fileId, { status: 'Ready', correctEntries: vouchers.length, excelMapping: mapping });
     };
 
+    const [showDisconnectModal, setShowDisconnectModal] = useState(false);
+
     const startBulkPush = async () => {
+        const status = await checkTallyConnection();
+        if (!status.online) {
+            setShowDisconnectModal(true);
+            return;
+        }
+
         setIsProcessing(true);
         if (onUpdateFile && fileId) onUpdateFile(fileId, { status: 'Processing' });
         try {
             const total = mappedData.length;
             const totalBatches = Math.ceil(total / BATCH_SIZE);
             let createdMasters = new Set<string>();
-            try { const existing = await fetchExistingLedgers(selectedCompany); createdMasters = new Set(existing); } catch { }
+            // try { const existing = await fetchExistingLedgers(selectedCompany); createdMasters = new Set(existing); } catch { }
             let errorCount = 0;
             for (let i = 0; i < totalBatches; i++) {
                 const end = (i + 1) * BATCH_SIZE;
@@ -537,19 +636,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
         } finally { setIsProcessing(false); }
     };
 
-    // Filter out empty/undefined columns AND unwanted GSTR filing-related columns
-    const excludedKeywords = [
-        'gstr3b', 'gstr-1/5', 'gstr1/5', 'gstr 1/5', 'filling status', 'filing status',
-        'filling date', 'filing date', 'filling period', 'filing period',
-        'tax period in which amended', 'amendment type', 'e-invoice applicable',
-        'einvoice applicable', 'e invoice applicable'
-    ];
-    const visibleColumns = allColumns.filter(col => {
-        if (col === null || col === undefined || col === '' || String(col).trim() === '') return false;
-        const colLower = String(col).toLowerCase();
-        // Exclude if column name contains any of the excluded keywords
-        return !excludedKeywords.some(keyword => colLower.includes(keyword));
-    });
+
 
     // Debug: Log detected columns
     console.log('All columns detected:', allColumns);
@@ -559,7 +646,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
     if (step === 1) {
         return (
             <div
-                className={`flex flex-col h-full min-h-0 gap-4 animate-fade-in relative transition-all duration-200 overflow-y-auto p-1 ${isDragOver ? 'bg-emerald-50/30 dark:bg-emerald-900/10 ring-2 ring-emerald-500 ring-inset rounded-xl' : ''}`}
+                className={`flex flex-col h-full min-h-0 gap-4 animate-fade-in relative transition-all duration-200 overflow-y-auto p-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none'] ${isDragOver ? 'bg-emerald-50/30 dark:bg-emerald-900/10 ring-2 ring-emerald-500 ring-inset rounded-xl' : ''}`}
                 onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
                 onDragLeave={() => setIsDragOver(false)}
                 onDrop={handleDrop}
@@ -605,7 +692,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0 ">
                     {[
                         { icon: Database, label: 'Column Mapping', desc: 'Map any spreadsheet structure to Tally fields.', color: 'text-emerald-500' },
                         { icon: Merge, label: 'Smart Merging', desc: 'Auto-combine line items into single vouchers.', color: 'text-emerald-500' },
@@ -628,25 +715,46 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
 
     if (step === 2) {
         return (
-            <div className="flex-1 p-6 flex flex-col gap-6 animate-fade-in overflow-hidden relative">
+            <div className="flex-1 p-6 flex flex-col gap-6 animate-fade-in overflow-hidden relative ">
                 {showNotification && (
-                    <div className="absolute top-4 right-4 z-50 bg-red-500 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 animate-fade-in">
+                    <div className="fixed top-10 right-10 z-[100] bg-red-500 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 animate-fade-in backdrop-blur-sm bg-opacity-95 border-2 border-red-400">
                         <AlertTriangle className="w-5 h-5" />
-                        <span className="font-bold">Please select a valid Voucher Type (Sales or Purchase)</span>
+                        <span className="font-bold">{notificationMessage}</span>
                     </div>
                 )}
+                {showDisconnectModal && <TallyDisconnectedModal onClose={() => setShowDisconnectModal(false)} />}
                 <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
                     <div className="flex justify-between items-center mb-6">
-                        <h3 className="font-bold text-lg flex items-center gap-2 text-slate-900 dark:text-white">
-                            <Database className="w-5 h-5 text-indigo-500" />
-                            Map Columns
-                        </h3>
-                        <span className="text-xs px-2 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 rounded-lg">
-                            Detected {allColumns.length} columns (Filtered)
-                        </span>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => {
+                                    if (onDelete && fileId) onDelete(fileId);
+                                    setStep(1);
+                                    setFile(null);
+                                    setFileId(null);
+                                    setMappedData([]);
+                                }}
+                                className="p-1.5 -ml-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-lg transition-colors"
+                                title="Back to Upload"
+                            >
+                                <ArrowLeft className="w-5 h-5" />
+                            </button>
+
+
+                            <h3 className="font-bold text-lg flex items-center gap-2 text-slate-900 dark:text-white ">
+                                <Database className="w-5 h-5 text-indigo-500" />
+                                Map Columns
+                            </h3>
+                        </div>
+                        <div className="flex items-center gap-3">
+
+                            <span className="text-xs px-2 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 rounded-lg ">
+                                Detected {allColumns.length} columns (Filtered)
+                            </span>
+                        </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-h-[500px] overflow-y-auto pr-2 scrollbar-thin">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-h-[500px] overflow-y-auto pr-2 scrollbar-thin ">
                         {/* Special Handling for VoucherType logic: If it's standard dropdown */}
                         <div>
                             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 pl-1">voucher type *</label>
@@ -750,6 +858,14 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
         <div className="flex-1 flex flex-col gap-6 animate-fade-in h-full overflow-hidden">
             <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex justify-between items-center transition-colors shrink-0">
                 <div className="flex items-center gap-4">
+                    <button
+                        onClick={() => setStep(2)}
+                        className="p-2 -ml-2 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-full transition-colors disabled:opacity-50"
+                        title="Back to Mapping"
+                        disabled={isProcessing}
+                    >
+                        <ArrowLeft className="w-6 h-6" />
+                    </button>
                     <div className="w-12 h-12 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center shadow-inner">
                         <Merge className="w-6 h-6" />
                     </div>

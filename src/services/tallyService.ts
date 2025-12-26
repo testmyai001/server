@@ -22,6 +22,11 @@ export const cleanName = (str: string): string => {
     .substring(0, 50);
 };
 
+// Custom rounding logic as per user request (For Grand Total)
+export const tallyRound = (value: number): number => {
+  return Math.round(value);
+};
+
 const round = (num: number): number => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
 };
@@ -152,11 +157,26 @@ export const checkTallyConnection = async (): Promise<{ online: boolean; info: s
 // --- BANK XML GENERATION ---
 export const generateBankStatementXml = (data: BankStatementData, existingLedgers: Set<string> = new Set()): string => {
   const svCompany = '##SVCurrentCompany';
-  const bankLedger = esc(data.bankName);
+
+  // Format bank name: remove Ltd./Limited and add only last 4 digits of account number
+  let cleanBankName = data.bankName
+    .replace(/\s*Ltd\.?\s*$/i, '')
+    .replace(/\s*Limited\s*$/i, '')
+    .trim();
+
+  // Add last 4 digits of account number if available
+  if (data.accountNumber) {
+    const last4 = data.accountNumber.replace(/\D/g, '').slice(-4);
+    if (last4) {
+      cleanBankName = `${cleanBankName} - ${last4}`;
+    }
+  }
+
+  const bankLedger = esc(cleanBankName);
 
   let mastersXml = '';
 
-  if (!existingLedgers.has(data.bankName)) {
+  if (!existingLedgers.has(cleanBankName)) {
     mastersXml += `
     <TALLYMESSAGE xmlns:UDF="TallyUDF">
       <LEDGER NAME="${bankLedger}" ACTION="Create">
@@ -174,7 +194,7 @@ export const generateBankStatementXml = (data: BankStatementData, existingLedger
   });
 
   uniqueContras.forEach(ledgerName => {
-    if (ledgerName !== data.bankName && !existingLedgers.has(ledgerName)) {
+    if (ledgerName !== cleanBankName && !existingLedgers.has(ledgerName)) {
       mastersXml += `
     <TALLYMESSAGE xmlns:UDF="TallyUDF">
       <LEDGER NAME="${esc(ledgerName)}" ACTION="Create">
@@ -271,17 +291,24 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
     if (!createdMasters.has(partyName)) {
       // Use correct group based on voucher type: Sales = Sundry Debtors, Purchase = Sundry Creditors
       const group = voucher.voucherType === 'Sales' ? 'Sundry Debtors' : 'Sundry Creditors';
-      const state = getStateName(voucher.gstin);
+      // Derive State: explicit POS > GSTIN-based > Default
+      const gstinState = getStateName(voucher.gstin);
+      const explicitState = voucher.placeOfSupply && voucher.placeOfSupply.length > 2 ? voucher.placeOfSupply : '';
+      const state = explicitState || gstinState || '';
 
       mastersXml += `
             <TALLYMESSAGE xmlns:UDF="TallyUDF">
-                <LEDGER NAME="${esc(partyName)}" ACTION="Create">
+                <LEDGER NAME="${esc(partyName)}" ACTION="Alter">
                     <NAME.LIST><NAME>${esc(partyName)}</NAME></NAME.LIST>
                     <PARENT>${group}</PARENT>
                     <ISBILLWISEON>Yes</ISBILLWISEON>
                     <ISGSTAPPLICABLE>Yes</ISGSTAPPLICABLE>
-                    ${voucher.gstin ? `<PARTYGSTIN>${esc(voucher.gstin)}</PARTYGSTIN>` : ''}
+                    <COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>
+                    <COUNTRYNAME>India</COUNTRYNAME>
+                    ${state ? `<LEDGERSTATENAME>${esc(state)}</LEDGERSTATENAME>` : ''}
                     ${state ? `<STATENAME>${esc(state)}</STATENAME>` : ''}
+                    ${voucher.gstin ? `<PARTYGSTIN>${esc(voucher.gstin)}</PARTYGSTIN>` : ''}
+                    ${voucher.gstin ? `<GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE>` : '<GSTREGISTRATIONTYPE>Unregistered</GSTREGISTRATIONTYPE>'}
                 </LEDGER>
             </TALLYMESSAGE>`;
       createdMasters.add(partyName);
@@ -297,7 +324,7 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
       if (!createdMasters.has(ledgerName)) {
         mastersXml += `
                 <TALLYMESSAGE xmlns:UDF="TallyUDF">
-                    <LEDGER NAME="${esc(ledgerName)}" ACTION="Create">
+                    <LEDGER NAME="${esc(ledgerName)}" ACTION="Alter">
                         <NAME.LIST><NAME>${esc(ledgerName)}</NAME></NAME.LIST>
                         <PARENT>${voucher.voucherType === 'Sales' ? 'Sales Accounts' : 'Purchase Accounts'}</PARENT>
                         <ISGSTAPPLICABLE>Yes</ISGSTAPPLICABLE>
@@ -313,7 +340,7 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
           if (!createdMasters.has(taxLedgerName)) {
             mastersXml += `
                         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-                        <LEDGER NAME="${esc(taxLedgerName)}" ACTION="Create">
+                        <LEDGER NAME="${esc(taxLedgerName)}" ACTION="Alter">
                         <NAME.LIST><NAME>${esc(taxLedgerName)}</NAME></NAME.LIST>
                         <PARENT>Duties &amp; Taxes</PARENT>
                         <TAXTYPE>GST</TAXTYPE>
@@ -331,7 +358,7 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
           if (!createdMasters.has(cgstName)) {
             mastersXml += `
                         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-                        <LEDGER NAME="${esc(cgstName)}" ACTION="Create">
+                        <LEDGER NAME="${esc(cgstName)}" ACTION="Alter">
                         <NAME.LIST><NAME>${esc(cgstName)}</NAME></NAME.LIST>
                         <PARENT>Duties &amp; Taxes</PARENT>
                         <TAXTYPE>GST</TAXTYPE>
@@ -344,7 +371,7 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
           if (!createdMasters.has(sgstName)) {
             mastersXml += `
                         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-                        <LEDGER NAME="${esc(sgstName)}" ACTION="Create">
+                        <LEDGER NAME="${esc(sgstName)}" ACTION="Alter">
                         <NAME.LIST><NAME>${esc(sgstName)}</NAME></NAME.LIST>
                         <PARENT>Duties &amp; Taxes</PARENT>
                         <TAXTYPE>GST</TAXTYPE>
@@ -356,7 +383,21 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
           }
         }
       }
+
     });
+
+    if (!createdMasters.has('Round Off')) {
+      mastersXml += `
+            <TALLYMESSAGE xmlns:UDF="TallyUDF">
+                <LEDGER NAME="Round Off" ACTION="Alter">
+                    <NAME.LIST><NAME>Round Off</NAME></NAME.LIST>
+                    <PARENT>Indirect Expenses</PARENT>
+                    <ISBILLWISEON>No</ISBILLWISEON>
+                    <ISGSTAPPLICABLE>No</ISGSTAPPLICABLE>
+                </LEDGER>
+            </TALLYMESSAGE>`;
+      createdMasters.add('Round Off');
+    }
   });
 
   // 2. Process Vouchers
@@ -430,7 +471,17 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
       }
     });
 
-    const partyTotal = round(totalVoucherAmount);
+    if (voucher.roundOff && voucher.roundOff !== 0) {
+      const roundOffStr = isSales ? `${voucher.roundOff.toFixed(2)}` : `-${voucher.roundOff.toFixed(2)}`;
+      allocationsXml += `
+            <LEDGERENTRIES.LIST>
+                <LEDGERNAME>Round Off</LEDGERNAME>
+                <ISDEEMEDPOSITIVE>${isSales ? 'No' : 'Yes'}</ISDEEMEDPOSITIVE>
+                <AMOUNT>${roundOffStr}</AMOUNT>
+            </LEDGERENTRIES.LIST>`;
+    }
+
+    const partyTotal = round(totalVoucherAmount + (voucher.roundOff || 0));
     const partyAmountStr = isSales ? `-${partyTotal.toFixed(2)}` : `${partyTotal.toFixed(2)}`;
 
     vouchersXml += `

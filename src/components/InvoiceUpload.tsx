@@ -1,6 +1,6 @@
 
 import React, { useCallback, useState, useRef } from 'react';
-import { UploadCloud, Zap, History, FileUp, FileText, CheckCircle, ShieldCheck, ArrowRight, Loader2, Landmark, Sparkles, LayoutDashboard, Activity } from 'lucide-react';
+import { UploadCloud, Zap, History, FileUp, FileText, CheckCircle, ShieldCheck, ArrowRight, ArrowLeft, Loader2, Landmark, Sparkles, LayoutDashboard, Activity } from 'lucide-react';
 import { InvoiceData } from '../types';
 
 interface InvoiceUploadProps {
@@ -9,11 +9,32 @@ interface InvoiceUploadProps {
   onNavigateToDashboard?: () => void;
   onNavigateToLogs?: () => void;
   isProcessing?: boolean;
+  autoTrigger?: boolean;
+  onAutoTriggered?: () => void;
 }
 
-const InvoiceUpload: React.FC<InvoiceUploadProps> = ({ onFilesSelected, onRestoreDraft, onNavigateToDashboard, onNavigateToLogs, isProcessing = false }) => {
+const InvoiceUpload: React.FC<InvoiceUploadProps> = ({
+  onFilesSelected,
+  onRestoreDraft,
+  onNavigateToDashboard,
+  onNavigateToLogs,
+  isProcessing = false,
+  autoTrigger = false,
+  onAutoTriggered
+}) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-trigger file dialog on mount if requested (with small delay to ensure mount)
+  React.useEffect(() => {
+    if (autoTrigger && fileInputRef.current) {
+      const timer = setTimeout(() => {
+        fileInputRef.current?.click();
+        if (onAutoTriggered) onAutoTriggered();
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [autoTrigger, onAutoTriggered]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -82,18 +103,27 @@ const InvoiceUpload: React.FC<InvoiceUploadProps> = ({ onFilesSelected, onRestor
   }
 
   return (
-    <div 
+    <div
       className="flex flex-col h-full min-h-0 gap-4 animate-fade-in relative overflow-y-auto p-1 transition-all duration-200"
       onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
       onDragLeave={() => setIsDragOver(false)}
       onDrop={handleDrop}
       onClick={() => fileInputRef.current?.click()}
     >
-      <div 
+      <div
         className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex justify-between items-center transition-colors shrink-0"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3">
+          {onNavigateToDashboard && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onNavigateToDashboard(); }}
+              className="p-1.5 -ml-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-lg transition-colors"
+              title="Back to Dashboard"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+          )}
           <div className="w-10 h-10 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-xl flex items-center justify-center shadow-inner">
             <FileUp className="w-5 h-5" />
           </div>
@@ -105,17 +135,17 @@ const InvoiceUpload: React.FC<InvoiceUploadProps> = ({ onFilesSelected, onRestor
 
         <div className="flex items-center gap-2">
           {hasSavedDraft && (
-             <button 
-               onClick={(e) => { e.stopPropagation(); handleRestoreDraft(); }}
-               className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg text-xs font-semibold hover:bg-blue-100 transition-colors"
-             >
-               <History className="w-3.5 h-3.5" /> Restore Draft
-             </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleRestoreDraft(); }}
+              className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg text-xs font-semibold hover:bg-blue-100 transition-colors"
+            >
+              <History className="w-3.5 h-3.5" /> Restore Draft
+            </button>
           )}
-          <button 
-             onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-             disabled={isProcessing}
-             className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg font-bold shadow-lg shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2 text-sm"
+          <button
+            onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+            disabled={isProcessing}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg font-bold shadow-lg shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2 text-sm"
           >
             {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
             {isProcessing ? 'Processing...' : 'Process Invoices'}
@@ -126,8 +156,8 @@ const InvoiceUpload: React.FC<InvoiceUploadProps> = ({ onFilesSelected, onRestor
       <div
         className={`
           flex-1 flex flex-col items-center justify-center rounded-[24px] border-4 border-dashed transition-all duration-300 p-6 relative overflow-hidden shadow-sm min-h-[300px] group
-          ${isDragOver 
-            ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/10 scale-[0.99] ring-4 ring-blue-500/20' 
+          ${isDragOver
+            ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/10 scale-[0.99] ring-4 ring-blue-500/20'
             : 'border-slate-200 dark:border-slate-700 bg-blue-50/30 dark:bg-blue-900/10 hover:bg-white dark:hover:bg-slate-800 hover:border-blue-300 dark:hover:border-blue-500'}
           `}
       >

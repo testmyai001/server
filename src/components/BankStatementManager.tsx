@@ -1,11 +1,12 @@
 // frontend/src/components/BankStatementManager.tsx
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { UploadCloud, FileText, ArrowRight, Loader2, Trash2, Landmark, Save, History, Zap, ShieldCheck, CheckCircle } from 'lucide-react';
+import { UploadCloud, FileText, ArrowLeft, ArrowRight, Loader2, Trash2, Landmark, Save, History, Zap, ShieldCheck, CheckCircle } from 'lucide-react';
 import { BankStatementData, BankTransaction, ProcessedFile } from '../types';
 import { processBankStatementPDF, processBankStatement } from '../services/backendService';
 import { BACKEND_API_KEY } from '../constants';
-import { generateBankStatementXml, pushToTally, fetchExistingLedgers, fetchOpenCompanies } from '../services/tallyService';
+import { generateBankStatementXml, pushToTally, fetchExistingLedgers, fetchOpenCompanies, checkTallyConnection } from '../services/tallyService';
 import { v4 as uuidv4 } from 'uuid';
+import TallyDisconnectedModal from './TallyDisconnectedModal';
 
 interface BankStatementManagerProps {
   onPushLog: (status: 'Success' | 'Failed', message: string, response?: string) => void;
@@ -13,11 +14,13 @@ interface BankStatementManagerProps {
   externalData?: BankStatementData | null; // Pre-loaded data from dashboard
   onMismatchDetected?: (file: File, detectedType: 'INVOICE') => void;
   onRegisterFile?: (file: File) => string;
+
   onUpdateFile?: (id: string, updates: Partial<ProcessedFile>) => void;
+  onDelete?: () => void;
 }
 
 const BankStatementManager: React.FC<BankStatementManagerProps> = ({
-  onPushLog, externalFile, externalData, onMismatchDetected, onRegisterFile, onUpdateFile
+  onPushLog, externalFile, externalData, onMismatchDetected, onRegisterFile, onUpdateFile, onDelete
 }) => {
   const [file, setFile] = useState<File | null>(null);
   const [fileId, setFileId] = useState<string | null>(null);
@@ -97,7 +100,26 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
   // Load external data if provided (from dashboard re-open)
   useEffect(() => {
     if (externalData && externalData.transactions.length > 0) {
-      setData(externalData);
+      // Apply same cleaning logic
+      let cleanBank = externalData.bankName || 'Unknown Bank';
+      // Always remove Ltd/Limited first
+      cleanBank = cleanBank.replace(/\s*Ltd\.?$/i, '').replace(/\s*Limited$/i, '').trim();
+
+      let cleanAcct = externalData.accountNumber;
+
+      if (!cleanAcct && cleanBank) {
+        const match = cleanBank.match(/^(.*?)[-\s]+(\d{4,})$/);
+        if (match) {
+          cleanBank = match[1].replace(/\s*Ltd\.?$/i, '').replace(/\s*Limited$/i, '').trim();
+          cleanAcct = match[2];
+        }
+      }
+
+      setData({
+        ...externalData,
+        bankName: cleanBank,
+        accountNumber: cleanAcct
+      });
       setStep(2); // Skip to transaction table
     }
   }, [externalData]);
@@ -169,8 +191,27 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
       const rawTransactions = result.transactions || [];
 
       setStep(2);
+
+      // Auto-fix bank name/account number if merged
+      let cleanBankName = result.bankName || 'Unknown Bank';
+      // Always remove Ltd/Limited first
+      cleanBankName = cleanBankName.replace(/\s*Ltd\.?$/i, '').replace(/\s*Limited$/i, '').trim();
+
+      let cleanAcctNum = result.accountNumber;
+
+      if (!cleanAcctNum && cleanBankName) {
+        // Try to capture trailing digits as account number
+        const match = cleanBankName.match(/^(.*?)[-\s]+(\d{4,})$/);
+        if (match) {
+          cleanBankName = match[1].replace(/\s*Ltd\.?$/i, '').replace(/\s*Limited$/i, '').trim();
+          cleanAcctNum = match[2];
+        }
+      }
+
       const newData = {
         ...result,
+        bankName: cleanBankName,
+        accountNumber: cleanAcctNum,
         transactions: rawTransactions.map(t => ({
           ...t,
           id: uuidv4(),
@@ -314,7 +355,16 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
     }));
   };
 
+  // Tally Disconnect Modal
+  const [showDisconnectModal, setShowDisconnectModal] = useState(false);
+
   const handlePushToTally = async () => {
+    const status = await checkTallyConnection();
+    if (!status.online) {
+      setShowDisconnectModal(true);
+      return;
+    }
+
     setIsPushing(true);
     try {
       const existingLedgers = await fetchExistingLedgers();
@@ -336,7 +386,7 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
     }
   };
 
-  const inputClass = "w-full px-2 py-1.5 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-700 text-sm focus:ring-2 focus:ring-tally-500 outline-none";
+  const inputClass = "w-full px-2 py-1.5 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-tally-500 outline-none";
 
   return (
     <div
@@ -372,15 +422,28 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
         </div>
       )}
 
+      {showDisconnectModal && <TallyDisconnectedModal onClose={() => setShowDisconnectModal(false)} />}
+
       <div
         className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex justify-between items-center shrink-0"
         onClick={(e) => e.stopPropagation()}
       >
-        <div>
-          <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <Landmark className="w-5 h-5 text-indigo-600" /> Bank Statement
-          </h2>
-          <p className="text-xs text-slate-500">Extract PDF statements to Payment/Receipt vouchers</p>
+        <div className="flex items-center gap-3">
+          {step === 2 && (
+            <button
+              onClick={() => setStep(1)}
+              className="p-1.5 -ml-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-lg transition-colors"
+              title="Back to Upload"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+          )}
+          <div>
+            <h2 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Landmark className="w-5 h-5 text-indigo-600" /> Bank Statement
+            </h2>
+            <p className="text-xs text-slate-500">Extract PDF statements to Payment/Receipt vouchers</p>
+          </div>
         </div>
 
         {step === 2 && (
@@ -389,9 +452,17 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
               <Save className="w-3.5 h-3.5" /> Save Draft
             </button>
             <div className="h-4 w-px bg-slate-300 dark:bg-slate-600 mx-1"></div>
-            <button onClick={() => setStep(1)} className="text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white text-xs font-medium">
-              Upload New
+            <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:border-indigo-800 dark:text-indigo-400 dark:hover:bg-indigo-900/50">
+              + Add New File
             </button>
+            {onDelete && (
+              <button
+                onClick={onDelete}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border bg-red-50 border-red-200 text-red-700 hover:bg-red-100 dark:bg-red-900/30 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/50"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Delete Entry
+              </button>
+            )}
             <button onClick={handlePushToTally} disabled={isPushing} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-1.5 rounded-lg font-medium flex items-center gap-1.5 shadow-md disabled:opacity-70 disabled:cursor-not-allowed text-xs">
               {isPushing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
               {isPushing ? 'Updating Tally...' : 'Push to Tally'}
@@ -444,7 +515,7 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
                         Select Document
                         <ArrowRight className="w-4 h-4" />
                       </button>
-                      <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden" onChange={handleFileUpload} />
+
                     </>
                   )}
 
@@ -487,13 +558,13 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Your Tally Bank Ledger Name</label>
               <input
                 type="text"
-                value={data.accountNumber ? `${data.bankName}-${data.accountNumber}` : data.bankName}
+                value={data.accountNumber ? `${data.bankName} - ${data.accountNumber.replace(/\D/g, '').slice(-4)}` : data.bankName}
                 onChange={(e) => {
-                  const val = e.target.value.trim();
-                  // Parse the combined format "Bank Name-XXXX"
+                  const val = e.target.value;
+                  // Parse the combined format "Bank Name - XXXX"
                   const dashIndex = val.lastIndexOf('-');
                   if (dashIndex > 0) {
-                    const bankName = val.substring(0, dashIndex);
+                    const bankName = val.substring(0, dashIndex).trim();
                     const acctNum = val.substring(dashIndex + 1).replace(/\D/g, '').slice(-4);
                     setData({ ...data, bankName, accountNumber: acctNum || undefined });
                   } else {
@@ -511,8 +582,8 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
             </div>
           </div>
 
-          <div className="flex-1 overflow-auto scrollbar-hide max-h-[500px]">
-            <table className="w-full text-sm text-left min-w-[900px]">
+          <div className="flex-1">
+            <table className="w-full text-sm text-left">
               <thead className="bg-slate-50 dark:bg-slate-700/50 text-slate-600 dark:text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-700 sticky top-0">
                 <tr>
                   <th className="px-4 py-3 w-32">Date</th>
@@ -528,26 +599,26 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
                 {(data.transactions || []).map((txn) => (
                   <tr key={txn.id} className="group hover:bg-slate-50 dark:hover:bg-slate-700/30">
                     <td className="p-2">
-                      <input type="text" value={txn.date} onChange={(e) => handleTransactionChange(txn.id, 'date', e.target.value)} className={`${inputClass} text-slate-900 dark:text-white`} />
+                      <input type="text" value={txn.date} onChange={(e) => handleTransactionChange(txn.id, 'date', e.target.value)} className={inputClass} />
                     </td>
                     <td className="p-2">
-                      <input type="text" value={txn.description} onChange={(e) => handleTransactionChange(txn.id, 'description', e.target.value)} className={`${inputClass} text-slate-900 dark:text-white`} />
+                      <input type="text" value={txn.description} onChange={(e) => handleTransactionChange(txn.id, 'description', e.target.value)} className={inputClass} />
                     </td>
                     <td className="p-2">
-                      <select value={txn.voucherType} onChange={(e) => handleTransactionChange(txn.id, 'voucherType', e.target.value)} className={`${inputClass} text-slate-900 dark:text-white`}>
+                      <select value={txn.voucherType} onChange={(e) => handleTransactionChange(txn.id, 'voucherType', e.target.value)} className={inputClass}>
                         <option value="Payment">Payment</option>
                         <option value="Receipt">Receipt</option>
                         <option value="Contra">Contra</option>
                       </select>
                     </td>
                     <td className="p-2">
-                      <input type="number" value={txn.withdrawal} onChange={(e) => handleTransactionChange(txn.id, 'withdrawal', parseFloat(e.target.value) || 0)} className={`${inputClass} text-right ${txn.withdrawal > 0 ? 'font-bold text-red-600 dark:text-red-400' : 'text-slate-900 dark:text-white'}`} />
+                      <input type="number" value={txn.withdrawal} onChange={(e) => handleTransactionChange(txn.id, 'withdrawal', parseFloat(e.target.value) || 0)} className={`${inputClass} text-right ${txn.withdrawal > 0 ? 'font-bold !text-red-600 dark:!text-red-400' : '!text-slate-400'}`} />
                     </td>
                     <td className="p-2">
-                      <input type="number" value={txn.deposit} onChange={(e) => handleTransactionChange(txn.id, 'deposit', parseFloat(e.target.value) || 0)} className={`${inputClass} text-right ${txn.deposit > 0 ? 'font-bold text-green-600 dark:text-green-400' : 'text-slate-900 dark:text-white'}`} />
+                      <input type="number" value={txn.deposit} onChange={(e) => handleTransactionChange(txn.id, 'deposit', parseFloat(e.target.value) || 0)} className={`${inputClass} text-right ${txn.deposit > 0 ? 'font-bold !text-green-600 dark:!text-green-400' : '!text-slate-400'}`} />
                     </td>
                     <td className="p-2">
-                      <input type="text" value={txn.contraLedger} onChange={(e) => handleTransactionChange(txn.id, 'contraLedger', e.target.value)} className={`${inputClass} text-slate-900 dark:text-white ${(txn.contraLedger === 'Suspense A/c' || txn.contraLedger === 'UPI Suspense') ? 'border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20' : ''}`} placeholder="Tally Ledger Name" />
+                      <input type="text" value={txn.contraLedger} onChange={(e) => handleTransactionChange(txn.id, 'contraLedger', e.target.value)} className={`${inputClass} ${(txn.contraLedger === 'Suspense A/c' || txn.contraLedger === 'UPI Suspense') ? 'border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20' : ''}`} placeholder="Tally Ledger Name" />
                     </td>
                     <td className="p-2 text-center">
                       <button onClick={() => removeTransaction(txn.id)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
@@ -566,8 +637,10 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
             </div>
           </div>
         </div>
-      )}
-    </div>
+      )
+      }
+      <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden" onChange={handleFileUpload} />
+    </div >
   );
 };
 

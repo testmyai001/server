@@ -58,6 +58,8 @@ export interface ExcelVoucher {
   narration?: string;
   period?: string; // Added
   reverseCharge?: string; // Added
+  placeOfSupply?: string; // Added for explicit state mapping
+  roundOff?: number; // Added for rounding differences
 }
 
 export interface BankStatementData {

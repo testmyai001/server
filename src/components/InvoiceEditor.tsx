@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { InvoiceData, LineItem } from '../types';
-import { Plus, Trash2, Save, RefreshCw, FileText, ExternalLink, ArrowRight, Loader2, ChevronLeft, ChevronRight, FileDown, Check, AlertTriangle, ShieldAlert, User, Building, ChevronDown, ZoomIn, ZoomOut, RotateCw, RotateCcw } from 'lucide-react';
+import { Plus, Trash2, Save, RefreshCw, FileText, FilePlus, ExternalLink, ArrowRight, Loader2, ChevronLeft, ChevronRight, FileDown, Check, AlertTriangle, ShieldAlert, User, Building, ChevronDown, ZoomIn, ZoomOut, RotateCw, RotateCcw } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { fetchOpenCompanies, fetchExistingLedgers, fetchCompanyDetails } from '../services/tallyService';
 
@@ -10,6 +10,9 @@ interface InvoiceEditorProps {
     file?: File;
     onSave: (data: InvoiceData, switchTab?: boolean) => void;
     onPush: (data: InvoiceData) => void;
+    onDelete?: () => void;
+    onAddFile?: () => void;
+    onAddFiles?: (files: File[]) => void;
     isPushing: boolean;
     isScanning?: boolean;
     currentIndex?: number;
@@ -28,6 +31,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
     file,
     onSave,
     onPush,
+    onDelete,
+    onAddFile,
+    onAddFiles,
     isPushing,
     isScanning = false,
     currentIndex = 0,
@@ -56,7 +62,23 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
 
     // Dropdown UI State
     const [activeDropdown, setActiveDropdown] = useState<'supplier' | 'buyer' | null>(null);
+
     const dropdownRef = useRef<HTMLDivElement>(null);
+
+    // Internal File Input
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files.length > 0) {
+            if (onAddFiles) {
+                onAddFiles(Array.from(e.target.files));
+            } else if (onAddFile) {
+                onAddFile();
+            }
+        }
+    };
+
+
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -473,6 +495,28 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                         </div>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                            onClick={() => {
+                                if (onAddFiles) {
+                                    fileInputRef.current?.click();
+                                } else if (onAddFile) {
+                                    onAddFile();
+                                }
+                            }}
+                            className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:border-indigo-800 dark:text-indigo-400 dark:hover:bg-indigo-900/50"
+                            disabled={isScanning}
+                        >
+                            <FilePlus className="w-3.5 h-3.5" /> Add New File
+                        </button>
+                        {onDelete && (
+                            <button
+                                onClick={onDelete}
+                                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border bg-red-50 border-red-200 text-red-700 hover:bg-red-100 dark:bg-red-900/30 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/50"
+                                disabled={isScanning}
+                            >
+                                <Trash2 className="w-3.5 h-3.5" /> Delete Entry
+                            </button>
+                        )}
                         <button onClick={handleSaveDraft} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border ${draftSaved ? 'bg-green-50 border-green-200 text-green-700 dark:bg-green-900/30 dark:border-green-800 dark:text-green-400' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700'}`}>
                             {draftSaved ? <Check className="w-3.5 h-3.5" /> : <FileDown className="w-3.5 h-3.5" />} {draftSaved ? 'Saved' : 'Save Draft'}
                         </button>
@@ -694,6 +738,16 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                     </div>
                 </div>
             </div>
+
+
+            <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                multiple
+                accept=".pdf,.jpg,.jpeg,.png"
+                onChange={handleFileSelect}
+            />
         </div>
     );
 };

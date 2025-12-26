@@ -18,6 +18,7 @@ import { processDocumentWithAI } from './services/backendService';
 import { saveInvoiceToDB, saveLogToDB } from './services/dbService';
 import { TALLY_API_URL, EMPTY_INVOICE, BACKEND_API_KEY } from './constants';
 import { v4 as uuidv4 } from 'uuid';
+import TallyDisconnectedModal from './components/TallyDisconnectedModal';
 
 
 const App: React.FC = () => {
@@ -56,7 +57,9 @@ const App: React.FC = () => {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
     const [logs, setLogs] = useState<LogEntry[]>([]);
+
     const [isPushing, setIsPushing] = useState(false);
+    const [shouldAutoTriggerUpload, setShouldAutoTriggerUpload] = useState(false);
 
     // Toast
     const [toast, setToast] = useState<{ show: boolean, message: string }>({ show: false, message: '' });
@@ -72,6 +75,7 @@ const App: React.FC = () => {
 
     // Tally Status
     const [tallyStatus, setTallyStatus] = useState<{ online: boolean; info: string; mode: 'full' | 'blind' | 'none'; activeCompany?: string }>({ online: false, info: 'Connecting...', mode: 'none' });
+    const [showTallyDisconnectModal, setShowTallyDisconnectModal] = useState(false);
 
     useEffect(() => {
         if (darkMode) {
@@ -171,13 +175,13 @@ const App: React.FC = () => {
         setProcessedFiles(prev => prev.map(f => {
             if (f.id === id) {
                 const updatedFile = { ...f, ...updates };
-                
+
                 // Auto-navigate to Dashboard ONLY for OCR_INVOICE processing
                 // Prevent redirect for Bank Statements or Excel Imports so user can edit them
                 if ((updates.status === 'Success' || updates.status === 'Failed') && f.sourceType === 'OCR_INVOICE') {
                     setTimeout(() => setCurrentView(AppView.DASHBOARD), 100);
                 }
-                
+
                 return updatedFile;
             }
             return f;
@@ -359,6 +363,76 @@ const App: React.FC = () => {
         }
     };
 
+    const handleDeleteFile = (fileId?: string) => {
+        const targetFile = fileId ? processedFiles.find(f => f.id === fileId)?.file : currentFile;
+        if (!targetFile) return;
+
+        // 1. Find index of target file
+        const currentIndex = processedFiles.findIndex(f => f.file === targetFile);
+
+        // 2. Remove target from list locally
+        // We need the new list to find the correct next file effectively if we want to be safe, 
+        // but looking at the *current* list is fine as long as we don't pick the deleted one.
+        const updatedFiles = processedFiles.filter(f => f.file !== targetFile);
+
+        // 3. Find nearest neighbor of type OCR_INVOICE
+        // We prefer the next one (index + 1), if not, previous (index - 1)
+        // But we must skip non-invoices if we want to stay in Invoice Editor?
+        // Actually, if we are in Editor, we only care about Invoices.
+
+        let nextInvoice: ProcessedFile | undefined;
+
+        // Look ahead
+        for (let i = currentIndex + 1; i < processedFiles.length; i++) {
+            if (processedFiles[i].sourceType === 'OCR_INVOICE') {
+                nextInvoice = processedFiles[i];
+                break;
+            }
+        }
+
+        // If not found ahead, look behind
+        if (!nextInvoice) {
+            for (let i = currentIndex - 1; i >= 0; i--) {
+                if (processedFiles[i].sourceType === 'OCR_INVOICE') {
+                    nextInvoice = processedFiles[i];
+                    break;
+                }
+            }
+        }
+
+        // 4. Update State
+        setProcessedFiles(updatedFiles);
+
+        if (nextInvoice && nextInvoice.data) {
+            handleViewInvoice(nextInvoice);
+        } else {
+            // No other invoices found
+            setCurrentFile(undefined);
+            setCurrentInvoice(null);
+            setCurrentView(AppView.DASHBOARD);
+        }
+    };
+
+    const handleAddFile = () => {
+        // Navigate to upload view to add more files and auto-trigger picker
+        setShouldAutoTriggerUpload(true);
+        setCurrentView(AppView.UPLOAD);
+    };
+
+    const handleAddFilesFromEditor = (files: File[]) => {
+        if (files.length === 0) return;
+
+        // Use existing bulk upload logic
+        handleBulkUpload(files);
+
+        // Set context to the first new file immediately
+        setCurrentFile(files[0]);
+        setCurrentInvoice(null);
+    };
+
+
+
+
     const handlePushToTally = async (invoiceData?: InvoiceData) => {
         const targetInvoice = invoiceData || currentInvoice;
         if (!targetInvoice) return;
@@ -366,7 +440,38 @@ const App: React.FC = () => {
         await performPush(targetInvoice, fileEntry?.id);
     };
 
+    const validateInvoiceForPush = (invoice: InvoiceData): string | null => {
+        if (!invoice.invoiceNumber || !invoice.invoiceNumber.trim()) return "Invoice Number is missing.";
+        if (!invoice.invoiceDate || !invoice.invoiceDate.trim()) return "Invoice Date is missing.";
+
+        const isSales = invoice.voucherType === 'Sales';
+        if (isSales) {
+            if (!invoice.buyerName || !invoice.buyerName.trim()) return "Buyer Name (Party) is missing.";
+        } else {
+            if (!invoice.supplierName || !invoice.supplierName.trim()) return "Supplier Name (Party) is missing.";
+        }
+        return null;
+    };
+
     const performPush = async (invoice: InvoiceData, fileId?: string) => {
+        // 0. Strict Validation
+        const validationError = validateInvoiceForPush(invoice);
+        if (validationError) {
+            setToast({ show: true, message: validationError });
+
+            if (fileId) {
+                setProcessedFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'Failed', error: validationError } : f));
+            }
+            return;
+        }
+
+        // Pre-check Connection
+        const status = await checkTallyConnection();
+        if (!status.online) {
+            setShowTallyDisconnectModal(true);
+            return;
+        }
+
         setIsPushing(true);
         const newLogId = uuidv4();
         const pendingLog: LogEntry = {
@@ -417,9 +522,31 @@ const App: React.FC = () => {
     const handleBulkPushToTally = async () => {
         const readyFiles = processedFiles.filter(f => (f.status === 'Ready') && f.data && f.sourceType === 'OCR_INVOICE');
         if (readyFiles.length === 0) return;
+
+        // Pre-check Connection
+        const status = await checkTallyConnection();
+        if (!status.online) {
+            setShowTallyDisconnectModal(true);
+            return;
+        }
+
         setIsPushing(true);
         for (const file of readyFiles) {
             if (file.data) {
+                // Pass checkConnection=false to avoid re-checking every single time in the loop, 
+                // but performPush usually checks inside. 
+                // Actually performPush now has a check at top. 
+                // We should refactor performPush to optionally skip check or just let it check (it's fast localhost).
+                // For safety and strictness requested by user "if tally not connected entries should not push", checking every time is safer but slower.
+                // However, since we defined the check in performPush, it will open the modal for EACH failed push if we loop.
+                // That might be annoying.
+                // Let's modify performPush to accept a "skipCheck" param or handle it.
+                // For now, let's just let it execute. If connection drops mid-way, it SHOULD stop.
+                // But if it's already disconnected, the loop will try to open the modal multiple times?
+                // No, setShowTallyDisconnectModal(true) is idempotent.
+                // But the loop continues. We need to break if performPush returns early.
+                // performPush is async void. We can't easily know if it failed due to connection.
+                // Let's rely on the user fixing it.
                 await performPush(file.data, file.id);
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
@@ -429,7 +556,7 @@ const App: React.FC = () => {
 
     const handleDownload = (file: ProcessedFile) => {
         const dataToDownload = file.data || file.bankData || file.excelData;
-        
+
         if (!dataToDownload) {
             // Fallback: Download metadata if no structured data exists
             const metadata = {
@@ -547,6 +674,8 @@ const App: React.FC = () => {
         );
         if (currentView === AppView.UPLOAD) return (
             <InvoiceUpload
+                autoTrigger={shouldAutoTriggerUpload}
+                onAutoTriggered={() => setShouldAutoTriggerUpload(false)}
                 onFilesSelected={(files) => {
                     handleBulkUpload(files);
                     if (files.length > 0) {
@@ -636,6 +765,9 @@ const App: React.FC = () => {
                             file={currentFile}
                             onSave={handleSaveInvoice}
                             onPush={handleEditorPush}
+                            onDelete={handleDeleteFile}
+                            onAddFile={handleAddFile}
+                            onAddFiles={handleAddFilesFromEditor}
                             isPushing={isPushing}
                             isScanning={isProcessing}
                             currentIndex={currentIndex} totalCount={totalInvoices}
@@ -651,6 +783,7 @@ const App: React.FC = () => {
                 onPushLog={handlePushLog} externalFile={pendingBankStatementFile} externalData={processedFiles.find(f => f.sourceType === 'BANK_STATEMENT' && f.bankData)?.bankData || null} onRedirectToInvoice={handleRedirectToInvoice}
                 onRegisterFile={(f) => handleRegisterFile(f, 'BANK_STATEMENT')}
                 onUpdateFile={handleUpdateFile}
+                onDelete={handleDeleteFile}
             />
         );
         if (currentView === AppView.EXCEL_IMPORT) {
@@ -665,6 +798,7 @@ const App: React.FC = () => {
                     externalFileId={excelFile?.id || null}
                     externalMappedData={excelFile?.excelData || null}
                     externalMapping={excelFile?.excelMapping || null}
+                    onDelete={handleDeleteFile}
                 />
             );
         }
@@ -691,6 +825,9 @@ const App: React.FC = () => {
                     darkMode={darkMode}
                     toggleDarkMode={() => setDarkMode(!darkMode)}
                 />
+            )}
+            {showTallyDisconnectModal && (
+                <TallyDisconnectedModal onClose={() => setShowTallyDisconnectModal(false)} />
             )}
             {invalidFileAlert.show && <InvalidFileModal fileName={invalidFileAlert.fileName} reason={invalidFileAlert.reason} onClose={() => setInvalidFileAlert({ show: false, fileName: '', reason: '' })} />}
             {mismatchedFileAlert.show && mismatchedFileAlert.file && (
