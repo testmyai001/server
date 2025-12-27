@@ -22,11 +22,25 @@ export const cleanName = (str: string): string => {
     .substring(0, 50);
 };
 
-// Custom rounding logic as per user request (For Grand Total)
+/**
+ * Monetary Rounding Rules (Strictly Followed):
+ * - If decimal < 0.50 → Round DOWN to nearest whole number (floor)
+ * - If decimal >= 0.50 → Round UP to next whole number (ceil + 1)
+ * 
+ * Examples: 100.40 → 100, 100.50 → 101, 999.49 → 999, 999.99 → 1000
+ */
 export const tallyRound = (value: number): number => {
-  return Math.round(value);
+  const integerPart = Math.floor(value);
+  const decimalPart = value - integerPart;
+
+  if (decimalPart >= 0.50) {
+    return integerPart + 1; // Round UP
+  } else {
+    return integerPart; // Round DOWN
+  }
 };
 
+// Standard 2-decimal rounding for intermediate calculations (taxes, line items)
 const round = (num: number): number => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
 };
@@ -622,24 +636,25 @@ export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string>
 
   let inventoryXml = '';
   data.lineItems.forEach(item => {
-    const rate = Number(item.gstRate) || 0;
+    const gstRate = Number(item.gstRate) || 0;
     const qty = Number(item.quantity) || 1;
     const itemRate = Number(item.rate) || 0;
-    const amount = round(qty * itemRate);
-    const itemName = cleanName(item.description) || `Item @ ${rate}%`;
-    const ledgerName = `${isSales ? 'Sale' : 'Purchase'} ${formatRate(rate)}%`;
+    // CRITICAL: Use the exact amount from UI (what user sees/edited) instead of recalculating
+    const amount = round(Number(item.amount) || 0);
+    const itemName = cleanName(item.description) || `Item @ ${gstRate}%`;
+    const ledgerName = `${isSales ? 'Sale' : 'Purchase'} ${formatRate(gstRate)}%`;
     totalVoucherValue += amount;
-    const lineTax = round(amount * (rate / 100));
+    const lineTax = round(amount * (gstRate / 100));
     totalVoucherValue += lineTax;
 
     // Determine if this item uses IGST: per-item flag takes precedence, otherwise use GSTIN-based detection
     const itemUsesIGST = item.isIGST !== undefined ? item.isIGST : isInterStateByGstin;
 
     if (itemUsesIGST) {
-      const name = `${isSales ? 'Output' : 'Input'} IGST ${formatRate(rate)}%`;
+      const name = `${isSales ? 'Output' : 'Input'} IGST ${formatRate(gstRate)}%`;
       taxLedgerTotals[name] = (taxLedgerTotals[name] || 0) + lineTax;
     } else {
-      const half = rate / 2;
+      const half = gstRate / 2;
       const cName = `${isSales ? 'Output' : 'Input'} CGST ${formatRate(half)}%`;
       const sName = `${isSales ? 'Output' : 'Input'} SGST ${formatRate(half)}%`;
       const halfTax = round(lineTax / 2);
@@ -651,24 +666,54 @@ export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string>
     inventoryXml += `<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>${esc(itemName)}</STOCKITEMNAME><ISDEEMEDPOSITIVE>${itemDeemedPos}</ISDEEMEDPOSITIVE><ACTUALQTY> ${qty} Nos</ACTUALQTY><BILLEDQTY> ${qty} Nos</BILLEDQTY><RATE>${itemRate.toFixed(2)}/Nos</RATE><AMOUNT>${amountStr}</AMOUNT><ACCOUNTINGALLOCATIONS.LIST><LEDGERNAME>${esc(ledgerName)}</LEDGERNAME><ISDEEMEDPOSITIVE>${itemDeemedPos}</ISDEEMEDPOSITIVE><AMOUNT>${amountStr}</AMOUNT></ACCOUNTINGALLOCATIONS.LIST></ALLINVENTORYENTRIES.LIST>`;
   });
 
+  // Calculate the ACTUAL tax amounts that will be written to XML
+  // This ensures party total = sum of all ledger entries exactly
+  let actualTaxTotal = 0;
   let taxLedgersXml = '';
   Object.entries(taxLedgerTotals).forEach(([name, rawAmt]) => {
     const amt = round(rawAmt);
     if (amt > 0) {
+      actualTaxTotal += amt; // Track actual rounded tax
       const taxAmtStr = `${(amt * itemSign).toFixed(2)}`;
       taxLedgersXml += `<LEDGERENTRIES.LIST><LEDGERNAME>${esc(name)}</LEDGERNAME><ISDEEMEDPOSITIVE>${itemDeemedPos}</ISDEEMEDPOSITIVE><AMOUNT>${taxAmtStr}</AMOUNT></LEDGERENTRIES.LIST>`;
     }
   });
 
-  // --- ROUND OFF LOGIC (Pattern B) ---
+  // Calculate actual item total from line items
+  let actualItemTotal = 0;
+  data.lineItems.forEach(item => {
+    actualItemTotal += round(Number(item.amount) || 0);
+  });
+
+  // --- ROUND OFF LOGIC ---
+  // roundOff from UI = roundedTotal - actualTotal
+  // Positive roundOff means we're rounding UP (adding to total)
+  // Negative roundOff means we're rounding DOWN (subtracting from total)
+  // For Tally: Purchase expense is negative amount, income is positive
+  // For Tally: Sales expense is positive amount, income is negative
+  let actualRoundOff = 0;
   if (data.roundOff && data.roundOff !== 0) {
-    const roundOffStr = isSales ? `${data.roundOff.toFixed(2)}` : `-${data.roundOff.toFixed(2)}`;
-    // Append to taxLedgersXml as it contains other allocations
-    taxLedgersXml += `<LEDGERENTRIES.LIST><LEDGERNAME>Round Off</LEDGERNAME><ISDEEMEDPOSITIVE>${isSales ? 'No' : 'Yes'}</ISDEEMEDPOSITIVE><AMOUNT>${roundOffStr}</AMOUNT></LEDGERENTRIES.LIST>`;
+    actualRoundOff = data.roundOff;
+    // For Purchase: positive roundOff = expense = need negative in XML
+    // For Purchase: negative roundOff = income = need positive in XML
+    // For Sales: positive roundOff = income = need negative in XML
+    // For Sales: negative roundOff = expense = need positive in XML
+    // Simplified: For Purchase, flip the sign. For Sales, keep the sign.
+    const roundOffAmount = isSales ? data.roundOff : -data.roundOff;
+    const roundOffStr = roundOffAmount.toFixed(2);
+    const isRoundOffPositive = roundOffAmount > 0;
+    // IsDeemedPositive: For Sales round off expense is No, income is Yes
+    // For Purchase round off expense is Yes, income is No
+    const roundOffDeemedPos = isSales
+      ? (isRoundOffPositive ? 'No' : 'Yes')  // Sales: positive is expense (No)
+      : (isRoundOffPositive ? 'Yes' : 'No'); // Purchase: positive is expense (Yes)
+    taxLedgersXml += `<LEDGERENTRIES.LIST><LEDGERNAME>Round Off</LEDGERNAME><ISDEEMEDPOSITIVE>${roundOffDeemedPos}</ISDEEMEDPOSITIVE><AMOUNT>${roundOffStr}</AMOUNT></LEDGERENTRIES.LIST>`;
   }
 
   const partySign = isSales ? -1 : 1;
-  const finalPartyTotal = round(totalVoucherValue + (data.roundOff || 0));
+  // CRITICAL: Party total = Items + Taxes + RoundOff (all using ACTUAL XML values)
+  // This guarantees: Party Amount = Sum of all other ledger entries = BALANCED
+  const finalPartyTotal = round(actualItemTotal + actualTaxTotal + actualRoundOff);
   const partyAmountStr = `${(finalPartyTotal * partySign).toFixed(2)}`;
 
   return `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>All Masters</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA>${mastersXml}</REQUESTDATA></IMPORTDATA><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA><TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER REMOTEID="${remoteId}" VCHKEY="${vchKey}" VCHTYPE="${voucherType}" ACTION="Create" OBJVIEW="Invoice Voucher View"><OLDAUDITENTRYIDS.LIST TYPE="Number"><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST><DATE>${dateXml}</DATE><EFFECTIVEDATE>${dateXml}</EFFECTIVEDATE><REFERENCEDATE>${dateXml}</REFERENCEDATE><VCHSTATUSDATE>${dateXml}</VCHSTATUSDATE><GUID>${guid}</GUID><STATENAME>${esc(partyState)}</STATENAME><COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE><PARTYGSTIN>${esc(partyGstin)}</PARTYGSTIN><PLACEOFSUPPLY>${esc(partyState)}</PLACEOFSUPPLY><VOUCHERTYPENAME>${voucherType}</VOUCHERTYPENAME><PARTYLEDGERNAME>${esc(partyName)}</PARTYLEDGERNAME><VOUCHERNUMBER>${esc(data.invoiceNumber)}</VOUCHERNUMBER><REFERENCE>${esc(data.invoiceNumber)}</REFERENCE><BASICBUYERNAME>${esc(buyerName)}</BASICBUYERNAME><ISINVOICE>Yes</ISINVOICE><NARRATION>Invoice No: ${esc(data.invoiceNumber)} | Date: ${esc(data.invoiceDate)} | Generated by AutoTally AI</NARRATION><LEDGERENTRIES.LIST><LEDGERNAME>${esc(partyName)}</LEDGERNAME><ISDEEMEDPOSITIVE>${partyDeemedPos}</ISDEEMEDPOSITIVE><ISPARTYLEDGER>Yes</ISPARTYLEDGER><AMOUNT>${partyAmountStr}</AMOUNT><BILLALLOCATIONS.LIST><NAME>${esc(data.invoiceNumber)}</NAME><BILLTYPE>New Ref</BILLTYPE><AMOUNT>${partyAmountStr}</AMOUNT></BILLALLOCATIONS.LIST></LEDGERENTRIES.LIST>${inventoryXml}${taxLedgersXml}</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`;

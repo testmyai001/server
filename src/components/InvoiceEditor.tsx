@@ -23,7 +23,19 @@ interface InvoiceEditorProps {
     hasPrev?: boolean;
 }
 
-// Consistent Rounding helper matching backend
+/**
+ * Monetary Rounding Rules (Strictly Followed):
+ * - If decimal < 0.50 → Round DOWN to nearest whole number
+ * - If decimal >= 0.50 → Round UP to next whole number
+ * Examples: 100.40 → 100, 100.50 → 101, 999.49 → 999, 999.99 → 1000
+ */
+const monetaryRound = (value: number): number => {
+    const integerPart = Math.floor(value);
+    const decimalPart = value - integerPart;
+    return decimalPart >= 0.50 ? integerPart + 1 : integerPart;
+};
+
+// Standard 2-decimal rounding for intermediate calculations
 const round = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100;
 
 const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
@@ -43,7 +55,13 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
     hasNext = false,
     hasPrev = false
 }) => {
-    const [formData, setFormData] = useState<InvoiceData>(data);
+    const [formData, setFormData] = useState<InvoiceData>(() => ({
+        ...data,
+        lineItems: data.lineItems.map((item) => ({
+            ...item,
+            id: item.id && item.id.length > 10 ? item.id : uuidv4()
+        }))
+    }));
     const [totals, setTotals] = useState({ taxable: 0, tax: 0, cgst: 0, sgst: 0, igst: 0, grand: 0 });
     const [fileUrl, setFileUrl] = useState<string | null>(null);
     const [draftSaved, setDraftSaved] = useState(false);
@@ -91,9 +109,28 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
+    // Only sync from data prop when the actual invoice changes (different invoice number)
+    // This prevents losing edits including deleted line items
+    const [lastSyncedInvoice, setLastSyncedInvoice] = useState<string>(data.invoiceNumber || '');
+
     useEffect(() => {
-        setFormData(data);
-    }, [data]);
+        // Only sync if the invoice number changed (switching invoices)
+        // or if this is the first load (lastSyncedInvoice is empty and data has content)
+        if (data.invoiceNumber !== lastSyncedInvoice || (!lastSyncedInvoice && data.lineItems.length > 0)) {
+            // Deep clone the data to avoid shared references
+            // Ensure every line item has a unique ID to prevent editing issues
+            const clonedData: InvoiceData = {
+                ...data,
+                lineItems: data.lineItems.map((item) => ({
+                    ...item,
+                    // Generate a unique ID if missing or too short
+                    id: item.id && item.id.length > 10 ? item.id : uuidv4()
+                }))
+            };
+            setFormData(clonedData);
+            setLastSyncedInvoice(data.invoiceNumber || '');
+        }
+    }, [data, lastSyncedInvoice]);
 
     useEffect(() => {
         if (file) {
@@ -265,7 +302,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
         });
 
         const actualGrand = totalTaxable + totalTax;
-        const roundedGrand = Math.round(actualGrand);
+        const roundedGrand = monetaryRound(actualGrand); // Use consistent 0.50 threshold rounding
         const roundOff = +(roundedGrand - actualGrand).toFixed(2);
 
 
@@ -291,7 +328,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
         setFormData(prev => ({ ...prev, [field]: value }));
     };
 
-    const handleLineItemChange = (id: string, field: keyof LineItem, value: string | number) => {
+    const handleLineItemChange = (id: string, field: keyof LineItem, value: string | number | boolean) => {
         setFormData(prev => ({
             ...prev,
             lineItems: prev.lineItems.map(item => {

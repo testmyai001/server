@@ -6,7 +6,6 @@
   "author": "Suraj",
   "type": "module",
   "main": "electron/main.js",
-  
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -24,7 +23,7 @@
       "TallyAiLogo00.ico"
     ],
     "directories": {
-      "output": "release_v10"
+      "output": "release_v12"
     },
     "win": {
       "target": "nsis",
