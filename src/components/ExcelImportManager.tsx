@@ -23,6 +23,46 @@ const round = (num: number): number => {
     return Math.round((num + Number.EPSILON) * 100) / 100;
 };
 
+// ================= CESS CONFIG =================
+const CESS_EFFECTIVE_DATE = new Date('2025-09-22');
+
+// Example rates – change only these when govt updates
+const OLD_CESS_RATE = 22; // % before 22-Sep-2025
+const NEW_CESS_RATE = 0;  // % after 22-Sep-2025 (example)
+
+// Safe date parser (YYYY-MM-DD from Excel)
+const parseInvoiceDate = (dateStr: string): Date => {
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? new Date() : d;
+};
+
+// Centralized CESS calculator
+const calculateCess = (
+    invoiceDate: string,
+    taxableAmount: number,
+    gstRate: number,
+    isCessMapped: boolean,
+    excelCess?: number
+): number => {
+    // 1️⃣ Excel override always wins (If column is mapped, TRUST IT, even if 0)
+    if (isCessMapped) {
+        return round(excelCess || 0);
+    }
+
+    // 2️⃣ Date-based CESS logic
+    const invDate = parseInvoiceDate(invoiceDate);
+
+    // Rule: Before 22-09-2025, Cess applies ONLY if GST is 28% (or higher)
+    // Rule: On/After 22-09-2025, Cess is 0 regardless of rate
+    if (invDate < CESS_EFFECTIVE_DATE) {
+        if (gstRate >= 28) {
+            return round((taxableAmount * OLD_CESS_RATE) / 100);
+        }
+    }
+
+    return 0;
+};
+
 const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRegisterFile, onUpdateFile, externalFile, externalFileId, externalMappedData, externalMapping, onDelete }) => {
     const [step, setStep] = useState<1 | 2 | 3>(1);
     const [file, setFile] = useState<File | null>(null);
@@ -519,6 +559,18 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
             const rate = parseNum(val(mapping.taxRate) || val(mapping.rate));
             const total = parseNum(val(mapping.invoiceValue));
 
+            const excelCess = parseNum(val(mapping.cess));
+
+            const isCessMapped = !!mapping.cess && mapping.cess.trim() !== '';
+
+            const computedCess = calculateCess(
+                String(dateVal),
+                taxable,
+                rate,
+                isCessMapped,
+                excelCess
+            );
+
             return {
                 date: String(dateVal),
                 invoiceNo: String(val(mapping.invoiceNo) || '').trim(),
@@ -532,7 +584,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 igst: parseNum(val(mapping.igst)),
                 cgst: parseNum(val(mapping.cgst)),
                 sgst: parseNum(val(mapping.sgst)),
-                cess: parseNum(val(mapping.cess)),
+                cess: computedCess, // ✅ DATE-BASED CESS APPLIED HERE
                 period: String(val(mapping.period) || ''),
                 reverseCharge: String(val(mapping.reverseCharge) || ''),
                 placeOfSupply: String(val(mapping.placeOfSupply) || '').trim()

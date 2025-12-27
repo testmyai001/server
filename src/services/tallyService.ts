@@ -398,6 +398,26 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
         }
       }
 
+
+
+      // CESS LEDGER CREATION
+      if (item.cess && item.cess > 0) {
+        const cessLedgerName = voucher.voucherType === 'Sales' ? 'Output Cess' : 'Input Cess';
+        if (!createdMasters.has(cessLedgerName)) {
+          mastersXml += `
+                  <TALLYMESSAGE xmlns:UDF="TallyUDF">
+                      <LEDGER NAME="${esc(cessLedgerName)}" ACTION="Alter">
+                          <NAME.LIST><NAME>${esc(cessLedgerName)}</NAME></NAME.LIST>
+                          <PARENT>Duties &amp; Taxes</PARENT>
+                          <TAXTYPE>GST</TAXTYPE>
+                          <GSTDUTYHEAD>Cess</GSTDUTYHEAD>
+                          <GSTRATE>0</GSTRATE>
+                      </LEDGER>
+                  </TALLYMESSAGE>`;
+          createdMasters.add(cessLedgerName);
+        }
+      }
+
     });
 
     if (!createdMasters.has('Round Off')) {
@@ -434,11 +454,11 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
     voucher.items.forEach(item => {
       const taxable = round(item.amount);
       const rate = item.taxRate;
-      
+
       // Use Excel-provided tax values if available, otherwise calculate
       const hasExcelTaxValues = (item.igst && item.igst > 0) || (item.cgst && item.cgst > 0) || (item.sgst && item.sgst > 0);
       const calculatedTax = round(taxable * (rate / 100));
-      
+
       // Determine which tax values to use
       let igstAmt = 0, cgstAmt = 0, sgstAmt = 0;
       if (hasExcelTaxValues) {
@@ -453,9 +473,10 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
           sgstAmt = round(calculatedTax - cgstAmt);
         }
       }
-      
+
       const totalTaxAmt = igstAmt + cgstAmt + sgstAmt;
-      totalVoucherAmount += (taxable + totalTaxAmt);
+      const cessAmt = round(item.cess || 0);
+      totalVoucherAmount += (taxable + totalTaxAmt + cessAmt);
 
       const ledgerName = item.ledgerName || `${isSales ? 'Sale' : 'Purchase'} ${rate}%`;
 
@@ -479,13 +500,13 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
                         <AMOUNT>${taxStr}</AMOUNT>
                     </LEDGERENTRIES.LIST>`;
       }
-      
+
       // Add CGST/SGST if applicable
       if (cgstAmt > 0 || sgstAmt > 0) {
         const half = rate / 2;
         const cgstName = `${isSales ? 'Output' : 'Input'} CGST ${formatRate(half)}%`;
         const sgstName = `${isSales ? 'Output' : 'Input'} SGST ${formatRate(half)}%`;
-        
+
         if (cgstAmt > 0) {
           const cgstStr = isSales ? `${cgstAmt.toFixed(2)}` : `-${cgstAmt.toFixed(2)}`;
           allocationsXml += `
@@ -504,6 +525,18 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
                         <AMOUNT>${sgstStr}</AMOUNT>
                     </LEDGERENTRIES.LIST>`;
         }
+      }
+
+      // Add CESS if applicable
+      if (cessAmt > 0) {
+        const cessLedgerName = isSales ? 'Output Cess' : 'Input Cess';
+        const cessStr = isSales ? `${cessAmt.toFixed(2)}` : `-${cessAmt.toFixed(2)}`;
+        allocationsXml += `
+                  <LEDGERENTRIES.LIST>
+                      <LEDGERNAME>${esc(cessLedgerName)}</LEDGERNAME>
+                      <ISDEEMEDPOSITIVE>${taxDeemedPos}</ISDEEMEDPOSITIVE>
+                      <AMOUNT>${cessStr}</AMOUNT>
+                  </LEDGERENTRIES.LIST>`;
       }
     });
 
@@ -526,6 +559,9 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
           actualTaxTotal += halfTax + otherHalf;
         }
       }
+
+      // Always add Cess to actual tax total
+      actualTaxTotal += round(item.cess || 0);
     });
 
     // --- ROUND OFF LOGIC ---

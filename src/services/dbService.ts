@@ -15,7 +15,7 @@ class AutoTallyDB {
 
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
-        
+
         if (!db.objectStoreNames.contains('uploads')) {
           db.createObjectStore('uploads', { keyPath: 'id' });
         }
@@ -77,6 +77,13 @@ class AutoTallyDB {
     tx.objectStore('uploads').clear();
     tx.objectStore('logs').clear();
   }
+
+  async deleteUpload(id: string) {
+    const db = await this.init();
+    const tx = db.transaction('uploads', 'readwrite');
+    const store = tx.objectStore('uploads');
+    await store.delete(id);
+  }
 }
 
 const dbInstance = new AutoTallyDB();
@@ -106,6 +113,10 @@ export const saveUploadToDB = async (upload: ProcessedFile) => {
 
 export const getUploadsFromDB = async () => {
   return await dbInstance.getAllUploads();
+};
+
+export const deleteUploadFromDB = async (id: string) => {
+  await dbInstance.deleteUpload(id);
 };
 
 export const clearLocalDatabase = async () => {

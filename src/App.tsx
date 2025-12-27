@@ -15,7 +15,7 @@ import { InvoiceData, LogEntry, AppView, ProcessedFile, Message } from './types'
 import { ArrowRight, CheckCircle2, X, FileText, AlertTriangle, CloudUpload, LayoutDashboard } from 'lucide-react';
 import { checkTallyConnection, fetchExistingLedgers, generateTallyXml, pushToTally } from './services/tallyService';
 import { processDocumentWithAI } from './services/backendService';
-import { saveInvoiceToDB, saveLogToDB } from './services/dbService';
+import { saveInvoiceToDB, saveLogToDB, deleteUploadFromDB } from './services/dbService';
 import { TALLY_API_URL, EMPTY_INVOICE, BACKEND_API_KEY } from './constants';
 import { v4 as uuidv4 } from 'uuid';
 import TallyDisconnectedModal from './components/TallyDisconnectedModal';
@@ -364,22 +364,20 @@ const App: React.FC = () => {
     };
 
     const handleDeleteFile = (fileId?: string) => {
-        const targetFile = fileId ? processedFiles.find(f => f.id === fileId)?.file : currentFile;
-        if (!targetFile) return;
+        const targetFileEntry = fileId ? processedFiles.find(f => f.id === fileId) : (currentFile ? processedFiles.find(f => f.file === currentFile) : undefined);
+        
+        if (!targetFileEntry) return;
 
-        // 1. Find index of target file
-        const currentIndex = processedFiles.findIndex(f => f.file === targetFile);
+        // 1. Delete from DB
+        deleteUploadFromDB(targetFileEntry.id).catch(console.error);
 
-        // 2. Remove target from list locally
-        // We need the new list to find the correct next file effectively if we want to be safe, 
-        // but looking at the *current* list is fine as long as we don't pick the deleted one.
-        const updatedFiles = processedFiles.filter(f => f.file !== targetFile);
+        // 2. Find index of target file
+        const currentIndex = processedFiles.findIndex(f => f.id === targetFileEntry.id);
 
-        // 3. Find nearest neighbor of type OCR_INVOICE
-        // We prefer the next one (index + 1), if not, previous (index - 1)
-        // But we must skip non-invoices if we want to stay in Invoice Editor?
-        // Actually, if we are in Editor, we only care about Invoices.
+        // 3. Remove target from list locally
+        const updatedFiles = processedFiles.filter(f => f.id !== targetFileEntry.id);
 
+        // 4. Find nearest neighbor of type OCR_INVOICE
         let nextInvoice: ProcessedFile | undefined;
 
         // Look ahead
@@ -400,16 +398,21 @@ const App: React.FC = () => {
             }
         }
 
-        // 4. Update State
+        // 5. Update State
         setProcessedFiles(updatedFiles);
 
-        if (nextInvoice && nextInvoice.data) {
-            handleViewInvoice(nextInvoice);
+        if (nextInvoice && updatedFiles.some(f => f.id === nextInvoice?.id)) {
+            // Wait a tick or just update current
+             // Since handleViewInvoice relies on processedFiles state (which is stale in this closure),
+             // We manually do what handleViewInvoice does:
+             setCurrentFile(nextInvoice.file);
+             if (nextInvoice.data) setCurrentInvoice(nextInvoice.data);
+             // handleViewInvoice(nextInvoice); // This might use old state if it uses processedFiles.find
         } else {
             // No other invoices found
             setCurrentFile(undefined);
             setCurrentInvoice(null);
-            setCurrentView(AppView.DASHBOARD);
+            setCurrentView(AppView.EDITOR);
         }
     };
 

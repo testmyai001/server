@@ -109,28 +109,29 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // Only sync from data prop when the actual invoice changes (different invoice number)
-    // This prevents losing edits including deleted line items
-    const [lastSyncedInvoice, setLastSyncedInvoice] = useState<string>(data.invoiceNumber || '');
+    // Only sync from data prop when we're actually switching to a different invoice
+    // Use a ref to avoid triggering re-renders and to persist across renders
+    const lastSyncedInvoiceRef = useRef<string>(data.invoiceNumber || '');
 
     useEffect(() => {
-        // Only sync if the invoice number changed (switching invoices)
-        // or if this is the first load (lastSyncedInvoice is empty and data has content)
-        if (data.invoiceNumber !== lastSyncedInvoice || (!lastSyncedInvoice && data.lineItems.length > 0)) {
+        const currentInvoiceId = data.invoiceNumber || '';
+
+        // Only sync if we're switching to a genuinely different invoice
+        // This prevents resetting edits (including deleted items) on parent re-renders
+        if (currentInvoiceId !== lastSyncedInvoiceRef.current) {
             // Deep clone the data to avoid shared references
-            // Ensure every line item has a unique ID to prevent editing issues
+            // Ensure every line item has a unique ID
             const clonedData: InvoiceData = {
                 ...data,
                 lineItems: data.lineItems.map((item) => ({
                     ...item,
-                    // Generate a unique ID if missing or too short
                     id: item.id && item.id.length > 10 ? item.id : uuidv4()
                 }))
             };
             setFormData(clonedData);
-            setLastSyncedInvoice(data.invoiceNumber || '');
+            lastSyncedInvoiceRef.current = currentInvoiceId;
         }
-    }, [data, lastSyncedInvoice]);
+    }, [data.invoiceNumber]); // Only depend on invoiceNumber, not entire data object
 
     useEffect(() => {
         if (file) {
@@ -555,13 +556,14 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                         </button>
                         {onDelete && (
                             <button
-                                onClick={onDelete}
+                                onClick={() => onDelete && onDelete()}
                                 className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border bg-red-50 border-red-200 text-red-700 hover:bg-red-100 dark:bg-red-900/30 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/50"
                                 disabled={isScanning}
                             >
                                 <Trash2 className="w-3.5 h-3.5" /> Delete Entry
                             </button>
                         )}
+
                         <button onClick={handleSaveDraft} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border ${draftSaved ? 'bg-green-50 border-green-200 text-green-700 dark:bg-green-900/30 dark:border-green-800 dark:text-green-400' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700'}`}>
                             {draftSaved ? <Check className="w-3.5 h-3.5" /> : <FileDown className="w-3.5 h-3.5" />} {draftSaved ? 'Saved' : 'Save Draft'}
                         </button>
@@ -740,7 +742,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                                             <td className="px-2 py-3 font-mono font-medium"><input type="number" value={item.amount} onChange={(e) => handleLineItemChange(item.id, 'amount', Number(e.target.value))} className={getTableInputClass(hasError('lineItemMath', item.id))} /></td>
                                             <td className="px-2 py-3">
                                                 <select value={item.gstRate} onChange={(e) => handleLineItemChange(item.id, 'gstRate', Number(e.target.value))} className={`${getTableInputClass(false)} text-center font-bold text-indigo-600 dark:text-indigo-400`}>
-                                                    <option value={0}>0%</option><option value={5}>5%</option><option value={12}>12%</option><option value={18}>18%</option><option value={28}>28%</option>
+                                                    <option value={0}>0%</option><option value={5}>5%</option><option value={12}>12%</option><option value={18}>18%</option><option value={28}>28%</option><option value={40}>40%</option>
                                                 </select>
                                             </td>
                                             <td className="px-2 py-3 text-center">
