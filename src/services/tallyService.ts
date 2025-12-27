@@ -434,14 +434,32 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
     voucher.items.forEach(item => {
       const taxable = round(item.amount);
       const rate = item.taxRate;
-      const taxAmt = round(taxable * (rate / 100));
-
-      totalVoucherAmount += (taxable + taxAmt);
+      
+      // Use Excel-provided tax values if available, otherwise calculate
+      const hasExcelTaxValues = (item.igst && item.igst > 0) || (item.cgst && item.cgst > 0) || (item.sgst && item.sgst > 0);
+      const calculatedTax = round(taxable * (rate / 100));
+      
+      // Determine which tax values to use
+      let igstAmt = 0, cgstAmt = 0, sgstAmt = 0;
+      if (hasExcelTaxValues) {
+        igstAmt = round(item.igst || 0);
+        cgstAmt = round(item.cgst || 0);
+        sgstAmt = round(item.sgst || 0);
+      } else if (rate > 0) {
+        if (isInterState) {
+          igstAmt = calculatedTax;
+        } else {
+          cgstAmt = round(calculatedTax / 2);
+          sgstAmt = round(calculatedTax - cgstAmt);
+        }
+      }
+      
+      const totalTaxAmt = igstAmt + cgstAmt + sgstAmt;
+      totalVoucherAmount += (taxable + totalTaxAmt);
 
       const ledgerName = item.ledgerName || `${isSales ? 'Sale' : 'Purchase'} ${rate}%`;
 
       const taxableStr = isSales ? `${taxable.toFixed(2)}` : `-${taxable.toFixed(2)}`;
-      const taxStr = isSales ? `${taxAmt.toFixed(2)}` : `-${taxAmt.toFixed(2)}`;
 
       allocationsXml += `
             <LEDGERENTRIES.LIST>
@@ -450,32 +468,36 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
                 <AMOUNT>${taxableStr}</AMOUNT>
             </LEDGERENTRIES.LIST>`;
 
-      if (rate > 0) {
-        if (isInterState) {
-          const taxLedgerName = `${isSales ? 'Output' : 'Input'} IGST ${rate}%`;
-          allocationsXml += `
+      // Add IGST if applicable
+      if (igstAmt > 0) {
+        const taxLedgerName = `${isSales ? 'Output' : 'Input'} IGST ${rate}%`;
+        const taxStr = isSales ? `${igstAmt.toFixed(2)}` : `-${igstAmt.toFixed(2)}`;
+        allocationsXml += `
                     <LEDGERENTRIES.LIST>
                         <LEDGERNAME>${esc(taxLedgerName)}</LEDGERNAME>
                         <ISDEEMEDPOSITIVE>${taxDeemedPos}</ISDEEMEDPOSITIVE>
                         <AMOUNT>${taxStr}</AMOUNT>
                     </LEDGERENTRIES.LIST>`;
-        } else {
-          const half = rate / 2;
-          const halfTax = round(taxAmt / 2);
-          const otherHalf = round(taxAmt - halfTax);
-
-          const cgstName = `${isSales ? 'Output' : 'Input'} CGST ${formatRate(half)}%`;
-          const sgstName = `${isSales ? 'Output' : 'Input'} SGST ${formatRate(half)}%`;
-
-          const cgstStr = isSales ? `${halfTax.toFixed(2)}` : `-${halfTax.toFixed(2)}`;
-          const sgstStr = isSales ? `${otherHalf.toFixed(2)}` : `-${otherHalf.toFixed(2)}`;
-
+      }
+      
+      // Add CGST/SGST if applicable
+      if (cgstAmt > 0 || sgstAmt > 0) {
+        const half = rate / 2;
+        const cgstName = `${isSales ? 'Output' : 'Input'} CGST ${formatRate(half)}%`;
+        const sgstName = `${isSales ? 'Output' : 'Input'} SGST ${formatRate(half)}%`;
+        
+        if (cgstAmt > 0) {
+          const cgstStr = isSales ? `${cgstAmt.toFixed(2)}` : `-${cgstAmt.toFixed(2)}`;
           allocationsXml += `
                     <LEDGERENTRIES.LIST>
                         <LEDGERNAME>${esc(cgstName)}</LEDGERNAME>
                         <ISDEEMEDPOSITIVE>${taxDeemedPos}</ISDEEMEDPOSITIVE>
                         <AMOUNT>${cgstStr}</AMOUNT>
-                    </LEDGERENTRIES.LIST>
+                    </LEDGERENTRIES.LIST>`;
+        }
+        if (sgstAmt > 0) {
+          const sgstStr = isSales ? `${sgstAmt.toFixed(2)}` : `-${sgstAmt.toFixed(2)}`;
+          allocationsXml += `
                     <LEDGERENTRIES.LIST>
                         <LEDGERNAME>${esc(sgstName)}</LEDGERNAME>
                         <ISDEEMEDPOSITIVE>${taxDeemedPos}</ISDEEMEDPOSITIVE>
@@ -485,17 +507,48 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
       }
     });
 
+    // Track the ACTUAL amounts being written to XML for exact balance
+    let actualItemTotal = 0;
+    let actualTaxTotal = 0;
+    voucher.items.forEach(item => {
+      actualItemTotal += round(item.amount);
+      // Use Excel-provided tax values if available
+      const hasExcelTaxValues = (item.igst && item.igst > 0) || (item.cgst && item.cgst > 0) || (item.sgst && item.sgst > 0);
+      if (hasExcelTaxValues) {
+        actualTaxTotal += round(item.igst || 0) + round(item.cgst || 0) + round(item.sgst || 0);
+      } else if (item.taxRate > 0) {
+        const calculatedTax = round(round(item.amount) * (item.taxRate / 100));
+        if (isInterState) {
+          actualTaxTotal += calculatedTax;
+        } else {
+          const halfTax = round(calculatedTax / 2);
+          const otherHalf = round(calculatedTax - halfTax);
+          actualTaxTotal += halfTax + otherHalf;
+        }
+      }
+    });
+
+    // --- ROUND OFF LOGIC ---
+    let actualRoundOff = 0;
     if (voucher.roundOff && voucher.roundOff !== 0) {
-      const roundOffStr = isSales ? `${voucher.roundOff.toFixed(2)}` : `-${voucher.roundOff.toFixed(2)}`;
+      actualRoundOff = voucher.roundOff;
+      // For Purchase: flip the sign. For Sales: keep the sign.
+      const roundOffAmount = isSales ? voucher.roundOff : -voucher.roundOff;
+      const roundOffStr = roundOffAmount.toFixed(2);
+      const isRoundOffPositive = roundOffAmount > 0;
+      const roundOffDeemedPos = isSales
+        ? (isRoundOffPositive ? 'No' : 'Yes')
+        : (isRoundOffPositive ? 'Yes' : 'No');
       allocationsXml += `
             <LEDGERENTRIES.LIST>
                 <LEDGERNAME>Round Off</LEDGERNAME>
-                <ISDEEMEDPOSITIVE>${isSales ? 'No' : 'Yes'}</ISDEEMEDPOSITIVE>
+                <ISDEEMEDPOSITIVE>${roundOffDeemedPos}</ISDEEMEDPOSITIVE>
                 <AMOUNT>${roundOffStr}</AMOUNT>
             </LEDGERENTRIES.LIST>`;
     }
 
-    const partyTotal = round(totalVoucherAmount + (voucher.roundOff || 0));
+    // CRITICAL: Party total = Items + Taxes + RoundOff (ACTUAL XML values)
+    const partyTotal = round(actualItemTotal + actualTaxTotal + actualRoundOff);
     const partyAmountStr = isSales ? `-${partyTotal.toFixed(2)}` : `${partyTotal.toFixed(2)}`;
 
     vouchersXml += `

@@ -572,7 +572,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
             v.totalAmount += lineTotal; // keep raw total ONLY
         });
 
-        // Calculate Round Off (Pattern B: Send Rounded Total to Tally)
+        // Calculate Round Off using consistent 0.50 threshold rounding
         Array.from(groupedMap.values()).forEach(v => {
             const actualTotal = v.items.reduce((acc, item) => {
                 return acc
@@ -583,7 +583,10 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     + (item.cess || 0);
             }, 0);
 
-            const roundedTotal = Math.round(actualTotal);
+            // 0.50 threshold rounding: < 0.50 rounds down, >= 0.50 rounds up
+            const integerPart = Math.floor(actualTotal);
+            const decimalPart = actualTotal - integerPart;
+            const roundedTotal = decimalPart >= 0.50 ? integerPart + 1 : integerPart;
             const roundOff = +(roundedTotal - actualTotal).toFixed(2);
 
             v.roundOff = roundOff;        // separate ledger
