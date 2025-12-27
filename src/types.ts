@@ -14,8 +14,10 @@ export interface LineItem {
 export interface InvoiceData {
   documentType?: 'INVOICE' | 'BANK_STATEMENT'; // Classification flag
   supplierName: string;
+  supplierAddress?: string; // Added for Tally XML
   supplierGstin: string;
   buyerName: string;
+  buyerAddress?: string; // Added for Tally XML
   buyerGstin: string;
   invoiceNumber: string;
   invoiceDate: string; // YYYY-MM-DD
@@ -58,6 +60,7 @@ export interface ExcelVoucher {
   items: ExcelVoucherItem[];
   totalAmount: number;
   narration?: string;
+  address?: string; // Added for Party Address
   period?: string; // Added
   reverseCharge?: string; // Added
   placeOfSupply?: string; // Added for explicit state mapping

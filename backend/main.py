@@ -386,8 +386,10 @@ Return VALID JSON ONLY with the following fields:
 - invoiceNumber
 - invoiceDate (DD-MM-YYYY)
 - supplierName
+- supplierAddress
 - supplierGstin
 - buyerName
+- buyerAddress
 - buyerGstin
 - lineItems [
     {
@@ -468,8 +470,10 @@ async def process_bulk(
             prompt = """Extract invoice data into this exact JSON structure:
 {
   "supplierName": "string",
+  "supplierAddress": "string",
   "supplierGstin": "string",
   "buyerName": "string",
+  "buyerAddress": "string",
   "buyerGstin": "string",
   "invoiceNumber": "string",
   "invoiceDate": "YYYY-MM-DD",
@@ -608,8 +612,10 @@ async def process_invoice_pdf(
 
 Required fields (camelCase strictly):
 - supplierName
+- supplierAddress
 - supplierGstin
 - buyerName
+- buyerAddress
 - buyerGstin
 - invoiceNumber
 - invoiceDate (YYYY-MM-DD format)

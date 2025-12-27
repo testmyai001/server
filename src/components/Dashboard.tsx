@@ -64,12 +64,73 @@ const Dashboard: React.FC<DashboardProps> = ({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // ================= VALIDATION LOGIC =================
+  const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+
+  const isValidGSTIN = (gstin?: string) => {
+    if (!gstin) return false;
+    return GSTIN_REGEX.test(gstin.trim());
+  };
+
+  const isValidDate = (dateStr?: string) => {
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    return !isNaN(d.getTime()) && dateStr.trim() !== '';
+  };
+
+  const calculateFileIssues = (file: ProcessedFile): number => {
+    // 1. If not OCR Invoice, fallback to existing incorrectEntries
+    if (file.sourceType !== 'OCR_INVOICE' || !file.data) {
+      return file.incorrectEntries || 0;
+    }
+
+    let issues = 0;
+    const data = file.data;
+
+    // 2. Header Validations
+    // GSTIN Check
+    const gstinToCheck = data.voucherType === 'Sales' ? data.buyerGstin : data.supplierGstin;
+    if (!gstinToCheck || !isValidGSTIN(gstinToCheck)) {
+      issues++;
+    } else {
+      // Double check just in case buyer/supplier logic is mixed, 
+      // usually we check the COUNTER PARTY's GSTIN. 
+      // Assuming currentInvoice logic sets buyerGstin/supplierGstin correctly.
+    }
+
+    // Date Check
+    if (!data.invoiceDate || !isValidDate(data.invoiceDate)) {
+      issues++;
+    }
+
+    // Invoice Number Check
+    if (!data.invoiceNumber || data.invoiceNumber.trim() === '') {
+      issues++;
+    }
+
+    // Party Name Check (Buyer for Sales, Supplier for Purchase)
+    if (data.voucherType === 'Sales') {
+      if (!data.buyerName || data.buyerName.trim() === '') issues++;
+    } else {
+      if (!data.supplierName || data.supplierName.trim() === '') issues++;
+    }
+
+    // Note: User explicitly requested to IGNORE 0-amount items for issue counting in dashboard.
+    // So logic here purely counts Header-level validity issues.
+
+    return issues;
+  };
+
   // Computed Statistics
   const totalFiles = files.length;
   const successFiles = files.filter(f => f.status === 'Success').length;
+  // Dynamic Failed Files count: any file with >0 issues is considered "At Risk" or "Failed" effectively for the card
+  // But let's keep status check for "Failed" status, but "Mismatches" card uses the calc.
   const failedFiles = files.filter(f => f.status === 'Failed' || f.status === 'Mismatch').length;
   const totalCorrect = files.reduce((acc, curr) => acc + (curr.correctEntries || 0), 0);
-  const totalIncorrect = files.reduce((acc, curr) => acc + (curr.incorrectEntries || 0), 0);
+
+  // USE NEW LOGIC for Total Mismatches
+  const totalIncorrect = files.reduce((acc, curr) => acc + calculateFileIssues(curr), 0);
 
   const readyCount = files.filter(f => f.status === 'Ready').length;
   const isPushDisabled = isPushing || readyCount === 0;
@@ -184,8 +245,8 @@ const Dashboard: React.FC<DashboardProps> = ({
               <button
                 onClick={() => setIsFilterDropdownOpen(!isFilterDropdownOpen)}
                 className={`p-3 border rounded-2xl transition-all shadow-sm active:scale-95 relative ${filterStatus !== 'All'
-                    ? 'bg-indigo-600 border-indigo-600 text-white'
-                    : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  ? 'bg-indigo-600 border-indigo-600 text-white'
+                  : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
               >
                 <Filter className="w-5 h-5" />
@@ -219,7 +280,7 @@ const Dashboard: React.FC<DashboardProps> = ({
               )}
             </div>
 
-            <button 
+            <button
               onClick={onDownloadAll}
               className="p-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all shadow-sm active:scale-95"
               title="Download All Visible"
@@ -268,8 +329,8 @@ const Dashboard: React.FC<DashboardProps> = ({
                     <td className="px-8 py-6">
                       <div className="flex items-center gap-3">
                         <div className={`w-10 h-10 rounded-2xl flex items-center justify-center border transition-all group-hover:scale-105 shadow-sm ${file.sourceType === 'EXCEL_IMPORT' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-500' :
-                            file.sourceType === 'BANK_STATEMENT' ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-500' :
-                              'bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-500'
+                          file.sourceType === 'BANK_STATEMENT' ? 'bg-indigo-500/10 border-indigo-500/20 text-indigo-600 dark:text-indigo-500' :
+                            'bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-500'
                           }`}>
                           {file.sourceType === 'EXCEL_IMPORT' ? <FileSpreadsheet className="w-5 h-5" /> :
                             file.sourceType === 'BANK_STATEMENT' ? <Landmark className="w-5 h-5" /> :
@@ -305,7 +366,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                       {file.correctEntries.toString().padStart(2, '0')}
                     </td>
                     <td className="px-8 py-6 text-center text-4xl font-black text-slate-300 dark:text-slate-600 font-mono tracking-tighter">
-                      {file.incorrectEntries.toString().padStart(2, '0')}
+                      {calculateFileIssues(file).toString().padStart(2, '0')}
                     </td>
                     <td className="px-8 py-6 text-slate-500 dark:text-slate-500 font-bold text-xs truncate max-w-[150px]">
                       {file.error || '-'}

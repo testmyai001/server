@@ -317,6 +317,9 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
                     <PARENT>${group}</PARENT>
                     <ISBILLWISEON>Yes</ISBILLWISEON>
                     <ISGSTAPPLICABLE>Yes</ISGSTAPPLICABLE>
+                    <ADDRESS.LIST>
+                        <ADDRESS>${esc(voucher.address || '')}</ADDRESS>
+                    </ADDRESS.LIST>
                     <COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>
                     <COUNTRYNAME>India</COUNTRYNAME>
                     ${state ? `<LEDGERSTATENAME>${esc(state)}</LEDGERSTATENAME>` : ''}
@@ -439,6 +442,11 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
     const dateXml = formatDateForXml(voucher.date);
     const partyName = cleanName(voucher.partyName);
     const isSales = voucher.voucherType === 'Sales';
+
+    // Logic for State/POS - Same as Masters
+    const gstinState = getStateName(voucher.gstin);
+    const explicitState = voucher.placeOfSupply && voucher.placeOfSupply.length > 2 ? voucher.placeOfSupply : '';
+    const state = explicitState || gstinState || '';
 
     const gstin = voucher.gstin ? voucher.gstin.trim().toUpperCase() : '';
     const homeState = '27';
@@ -597,6 +605,15 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
                 <VOUCHERNUMBER>${esc(voucher.invoiceNo)}</VOUCHERNUMBER>
                 <REFERENCE>${esc(voucher.invoiceNo)}</REFERENCE>
                 <PARTYLEDGERNAME>${esc(partyName)}</PARTYLEDGERNAME>
+                <PARTYNAME>${esc(partyName)}</PARTYNAME>
+                <ADDRESS.LIST>
+                    <ADDRESS>${esc(voucher.address || '')}</ADDRESS>
+                </ADDRESS.LIST>
+                ${state ? `<STATENAME>${esc(state)}</STATENAME>` : ''}
+                <COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>
+                ${voucher.gstin ? `<PARTYGSTIN>${esc(voucher.gstin)}</PARTYGSTIN>` : ''}
+                ${voucher.gstin ? `<GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE>` : '<GSTREGISTRATIONTYPE>Unregistered</GSTREGISTRATIONTYPE>'}
+                <PLACEOFSUPPLY>${esc(voucher.placeOfSupply || voucher.address || '')}</PLACEOFSUPPLY>
                 <ISINVOICE>Yes</ISINVOICE>
                 <GUID>${uuidv4()}</GUID>
                 <FBTPAYMENTTYPE>Default</FBTPAYMENTTYPE>
@@ -669,6 +686,7 @@ export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string>
   const partyGstin = isSales ? buyerGstin : supplierGstin;
   const partyState = getStateName(partyGstin) || 'Maharashtra';
   const buyerName = data.buyerName || 'Cash Buyer';
+  const partyAddress = (isSales ? data.buyerAddress : data.supplierAddress) || '';
 
   const sState = supplierGstin.substring(0, 2);
   const bState = buyerGstin.substring(0, 2);
@@ -691,7 +709,7 @@ export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string>
     <TALLYMESSAGE xmlns:UDF="TallyUDF"><GROUP NAME="${ledgerParentGroup}" ACTION="Create"><NAME.LIST><NAME>${ledgerParentGroup}</NAME></NAME.LIST><PARENT>Primary</PARENT></GROUP></TALLYMESSAGE>`;
 
   if (!existingLedgers.has(partyName)) {
-    mastersXml += `<TALLYMESSAGE xmlns:UDF="TallyUDF"><LEDGER NAME="${esc(partyName)}" ACTION="Create"><NAME.LIST><NAME>${esc(partyName)}</NAME></NAME.LIST><PARENT>${partyGroup}</PARENT><ISBILLWISEON>Yes</ISBILLWISEON><ISGSTAPPLICABLE>Yes</ISGSTAPPLICABLE>${partyGstin ? `<PARTYGSTIN>${esc(partyGstin)}</PARTYGSTIN>` : ''}${partyState ? `<STATENAME>${esc(partyState)}</STATENAME>` : ''}</LEDGER></TALLYMESSAGE>`;
+    mastersXml += `<TALLYMESSAGE xmlns:UDF="TallyUDF"><LEDGER NAME="${esc(partyName)}" ACTION="Create"><NAME.LIST><NAME>${esc(partyName)}</NAME></NAME.LIST><PARENT>${partyGroup}</PARENT><ISBILLWISEON>Yes</ISBILLWISEON><ISGSTAPPLICABLE>Yes</ISGSTAPPLICABLE><ADDRESS.LIST><ADDRESS>${esc(partyAddress)}</ADDRESS></ADDRESS.LIST>${partyGstin ? `<PARTYGSTIN>${esc(partyGstin)}</PARTYGSTIN>` : ''}${partyState ? `<STATENAME>${esc(partyState)}</STATENAME>` : ''}</LEDGER></TALLYMESSAGE>`;
   }
 
   const uniqueRates = new Set<number>();
@@ -805,7 +823,7 @@ export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string>
   const finalPartyTotal = round(actualItemTotal + actualTaxTotal + actualRoundOff);
   const partyAmountStr = `${(finalPartyTotal * partySign).toFixed(2)}`;
 
-  return `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>All Masters</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA>${mastersXml}</REQUESTDATA></IMPORTDATA><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA><TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER REMOTEID="${remoteId}" VCHKEY="${vchKey}" VCHTYPE="${voucherType}" ACTION="Create" OBJVIEW="Invoice Voucher View"><OLDAUDITENTRYIDS.LIST TYPE="Number"><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST><DATE>${dateXml}</DATE><EFFECTIVEDATE>${dateXml}</EFFECTIVEDATE><REFERENCEDATE>${dateXml}</REFERENCEDATE><VCHSTATUSDATE>${dateXml}</VCHSTATUSDATE><GUID>${guid}</GUID><STATENAME>${esc(partyState)}</STATENAME><COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE><PARTYGSTIN>${esc(partyGstin)}</PARTYGSTIN><PLACEOFSUPPLY>${esc(partyState)}</PLACEOFSUPPLY><VOUCHERTYPENAME>${voucherType}</VOUCHERTYPENAME><PARTYLEDGERNAME>${esc(partyName)}</PARTYLEDGERNAME><VOUCHERNUMBER>${esc(data.invoiceNumber)}</VOUCHERNUMBER><REFERENCE>${esc(data.invoiceNumber)}</REFERENCE><BASICBUYERNAME>${esc(buyerName)}</BASICBUYERNAME><ISINVOICE>Yes</ISINVOICE><NARRATION>Invoice No: ${esc(data.invoiceNumber)} | Date: ${esc(data.invoiceDate)} | Generated by AutoTally AI</NARRATION><LEDGERENTRIES.LIST><LEDGERNAME>${esc(partyName)}</LEDGERNAME><ISDEEMEDPOSITIVE>${partyDeemedPos}</ISDEEMEDPOSITIVE><ISPARTYLEDGER>Yes</ISPARTYLEDGER><AMOUNT>${partyAmountStr}</AMOUNT><BILLALLOCATIONS.LIST><NAME>${esc(data.invoiceNumber)}</NAME><BILLTYPE>New Ref</BILLTYPE><AMOUNT>${partyAmountStr}</AMOUNT></BILLALLOCATIONS.LIST></LEDGERENTRIES.LIST>${inventoryXml}${taxLedgersXml}</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`;
+  return `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>All Masters</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA>${mastersXml}</REQUESTDATA></IMPORTDATA><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA><TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER REMOTEID="${remoteId}" VCHKEY="${vchKey}" VCHTYPE="${voucherType}" ACTION="Create" OBJVIEW="Invoice Voucher View"><OLDAUDITENTRYIDS.LIST TYPE="Number"><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST><DATE>${dateXml}</DATE><EFFECTIVEDATE>${dateXml}</EFFECTIVEDATE><REFERENCEDATE>${dateXml}</REFERENCEDATE><VCHSTATUSDATE>${dateXml}</VCHSTATUSDATE><GUID>${guid}</GUID><VOUCHERTYPENAME>${voucherType}</VOUCHERTYPENAME><PARTYLEDGERNAME>${esc(partyName)}</PARTYLEDGERNAME><PARTYNAME>${esc(partyName)}</PARTYNAME><ADDRESS.LIST><ADDRESS>${esc(partyAddress)}</ADDRESS></ADDRESS.LIST><STATENAME>${esc(partyState)}</STATENAME><COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE><PARTYGSTIN>${esc(partyGstin)}</PARTYGSTIN><PLACEOFSUPPLY>${esc(partyState)}</PLACEOFSUPPLY><VOUCHERNUMBER>${esc(data.invoiceNumber)}</VOUCHERNUMBER><REFERENCE>${esc(data.invoiceNumber)}</REFERENCE><BASICBUYERNAME>${esc(buyerName)}</BASICBUYERNAME><ISINVOICE>Yes</ISINVOICE><NARRATION>Invoice No: ${esc(data.invoiceNumber)} | Date: ${esc(data.invoiceDate)} | Generated by AutoTally AI</NARRATION><LEDGERENTRIES.LIST><LEDGERNAME>${esc(partyName)}</LEDGERNAME><ISDEEMEDPOSITIVE>${partyDeemedPos}</ISDEEMEDPOSITIVE><ISPARTYLEDGER>Yes</ISPARTYLEDGER><AMOUNT>${partyAmountStr}</AMOUNT><BILLALLOCATIONS.LIST><NAME>${esc(data.invoiceNumber)}</NAME><BILLTYPE>New Ref</BILLTYPE><AMOUNT>${partyAmountStr}</AMOUNT></BILLALLOCATIONS.LIST></LEDGERENTRIES.LIST>${inventoryXml}${taxLedgersXml}</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`;
 };
 
 // --- PUSH FUNCTION ---

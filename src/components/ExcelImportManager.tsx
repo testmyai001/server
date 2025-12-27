@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FileSpreadsheet, ArrowRight, ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Merge, Database, ListPlus, RefreshCw, Play, Building2, UploadCloud, ChevronDown } from 'lucide-react';
-import { read, utils } from 'xlsx';
+import { FileSpreadsheet, ArrowRight, ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Merge, Database, ListPlus, RefreshCw, Play, Building2, UploadCloud, ChevronDown, Download } from 'lucide-react';
+import { read, utils, writeFile } from 'xlsx';
 import { ExcelVoucher, ProcessedFile } from '../types';
 import { generateBulkExcelXml, pushToTally, fetchExistingLedgers, analyzeLedgerRequirements, fetchOpenCompanies, checkTallyConnection, tallyRound } from '../services/tallyService';
 import { v4 as uuidv4 } from 'uuid';
@@ -99,8 +99,61 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
         cgst: '',
         sgst: '',
         cess: '',
-        quantity: ''
+        quantity: '',
+        address: '',      // Added for Address mapping
+        placeOfSupply: '' // Added for POS mapping
     });
+
+    const downloadTemplate = () => {
+        const headers = [
+            'Period',
+            'Supplier Name',
+            'Address',
+            'GSTIN',
+            'POS',
+            'Invoice Type',
+            'Invoice No',
+            'Invoice Date',
+            'Reverse Charge',
+            'Invoice Value',
+            'Taxable Value',
+            'Tax Rate',
+            'IGST',
+            'CGST',
+            'SGST',
+            'Cess'
+        ];
+
+        // Add a sample row to help users understand format
+        const sampleRow = [
+            'Apr-2025',          // Period
+            'Sample Party Name', // Supplier Name
+            'Pune, Maharashtra', // Address
+            '27ABCDE1234F1Z5',   // GSTIN
+            'Maharashtra',       // POS
+            'Purchase',          // Invoice Type
+            'INV-001',           // Invoice No
+            new Date().toISOString().split('T')[0], // Invoice Date
+            'No',                // Reverse Charge
+            1180,                // Invoice Value
+            1000,                // Taxable Value
+            18,                  // Tax Rate
+            0,                   // IGST
+            90,                  // CGST
+            90,                  // SGST
+            0                    // Cess
+        ];
+
+        const ws = utils.aoa_to_sheet([headers, sampleRow]);
+
+        // Set column widths for better readability
+        const wscols = headers.map(h => ({ wch: h.length + 5 }));
+        ws['!cols'] = wscols;
+
+        const wb = utils.book_new();
+        utils.book_append_sheet(wb, ws, "Template");
+        writeFile(wb, "AutoTally_Import_Template.xlsx");
+    };
 
     const BATCH_SIZE = 100;
 
@@ -150,7 +203,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                         let headerRowIndex = 0;
                         let maxScore = 0;
                         // Enhanced keywords for header detection - covers both GSTR formats
-                        const keywords = ['date', 'invoice', 'no', 'gstin', 'party', 'name', 'tax', 'amount', 'rate', 'value', 'type', 'ledger', 'cgst', 'sgst', 'igst', 'total', 'cess', 'taxable', 'integrated', 'central', 'state', 'supplier', 'period', 'reverse', 'pos', 'con', 'place', 'supply', 'filing', 'status', 'document', 'uin', 'applicable'];
+                        const keywords = ['date', 'invoice', 'no', 'gstin', 'party', 'name', 'address', 'tax', 'amount', 'rate', 'value', 'type', 'ledger', 'cgst', 'sgst', 'igst', 'total', 'cess', 'taxable', 'integrated', 'central', 'state', 'supplier', 'period', 'reverse', 'pos', 'con', 'place', 'supply', 'filing', 'status', 'document', 'uin', 'applicable'];
                         for (let i = 0; i < Math.min(data.length, 20); i++) {
                             const row = data[i];
                             if (!Array.isArray(row)) continue;
@@ -173,6 +226,8 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                             if (c === 'inv no' || c === 'invoice no' || c === 'no' || c === 'bill no' || c.includes('voucher no') || c.includes('doc no') || c === 'invoice number') guess.invoiceNo = col;
                             // Party Name
                             if (c === 'supplier name' || c === 'party name' || c === 'customer name' || c === 'party' || c === 'name' || c.includes('ledger') || c.includes('particulars')) guess.partyName = col;
+                            // Address
+                            if (c === 'address' || c === 'party address' || c === 'supplier address' || c === 'billing address') guess.address = col;
                             // GSTIN
                             if (c.includes('gstin') || c.includes('gst no') || c === 'gstin/uin' || c === 'gst number') guess.gstin = col;
                             // Taxable Value / Amount
@@ -326,7 +381,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     let headerRowIndex = 0;
                     let maxScore = 0;
                     // Enhanced keywords list for better header detection - covers both GSTR formats
-                    const keywords = ['date', 'invoice', 'no', 'gstin', 'party', 'name', 'tax', 'amount', 'rate', 'value', 'type', 'ledger', 'cgst', 'sgst', 'igst', 'total', 'cess', 'taxable', 'integrated', 'central', 'state', 'supplier', 'period', 'reverse', 'pos', 'con', 'place', 'supply', 'filing', 'status', 'document', 'uin', 'applicable'];
+                    const keywords = ['date', 'invoice', 'no', 'gstin', 'party', 'name', 'address', 'tax', 'amount', 'rate', 'value', 'type', 'ledger', 'cgst', 'sgst', 'igst', 'total', 'cess', 'taxable', 'integrated', 'central', 'state', 'supplier', 'period', 'reverse', 'pos', 'con', 'place', 'supply', 'filing', 'status', 'document', 'uin', 'applicable'];
                     for (let i = 0; i < Math.min(data.length, 20); i++) {
                         const row = data[i];
                         if (!Array.isArray(row)) continue;
@@ -348,12 +403,17 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                         // Invoice No Mapping
                         if (c === 'inv no' || c === 'invoice no' || c === 'no' || c === 'bill no' || c.includes('voucher no') || c.includes('doc no') || c === 'invoice number' || c === 'vch no') guess.invoiceNo = col;
 
+
                         // Party Name Mapping - Exact matches first, then partial matches
                         if (c === 'supplier name' || c === 'party name' || c === 'customer name' ||
                             c === 'party' || c === 'name' || c === 'buyer name' || c === 'seller name' ||
                             c.includes('party name') || c.includes('customer') || c.includes('supplier') ||
                             c.includes('ledger') || c.includes('particulars')) {
                             guess.partyName = col;
+                        }
+                        // Address Mapping
+                        if (c === 'address' || c === 'party address' || c === 'supplier address' || c === 'billing address') {
+                            guess.address = col;
                         }
 
                         // GSTIN Mapping - Enhanced for GSTR files (some files use 'IGST No' for GSTIN)
@@ -571,6 +631,12 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 excelCess
             );
 
+            const mappedAddress = String(val(mapping.address) || '').trim();
+            const mappedPOS = String(val(mapping.placeOfSupply) || '').trim();
+
+            const finalAddress = mappedAddress || mappedPOS;
+            const finalPOS = mappedPOS || mappedAddress;
+
             return {
                 date: String(dateVal),
                 invoiceNo: String(val(mapping.invoiceNo) || '').trim(),
@@ -587,7 +653,8 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 cess: computedCess, // ✅ DATE-BASED CESS APPLIED HERE
                 period: String(val(mapping.period) || ''),
                 reverseCharge: String(val(mapping.reverseCharge) || ''),
-                placeOfSupply: String(val(mapping.placeOfSupply) || '').trim()
+                placeOfSupply: finalPOS, // Fallback Logic
+                address: finalAddress    // Fallback Logic
             };
         }).filter(t => (t.amount !== 0 || t.totalAmount !== 0) && t.invoiceNo !== '');
 
@@ -600,7 +667,8 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     gstin: row.gstin, voucherType: row.voucherType, items: [], totalAmount: 0,
                     period: row.period,
                     reverseCharge: row.reverseCharge,
-                    placeOfSupply: row.placeOfSupply
+                    placeOfSupply: row.placeOfSupply,
+                    address: row.address
                 });
             }
             const v = groupedMap.get(key)!;
@@ -722,6 +790,17 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                             <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Reconcile large volume spreadsheet data efficiently</p>
                         </div>
                     </div>
+
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            downloadTemplate();
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 rounded-lg text-sm font-semibold transition-colors"
+                    >
+                        <Download className="w-4 h-4" />
+                        Download Template
+                    </button>
                 </div>
 
                 <div
