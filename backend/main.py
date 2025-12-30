@@ -733,7 +733,7 @@ You are a bank statement analyzer.
 Extract data from the following text into this exact JSON structure:
 
 {{
-  "documentType": "BANK_STATEMENT",
+  "documentType": "BANK_STATEMENT" or "INVOICE",
   "bankName": "string (inferred from header)",
   "accountNumber": "string (full or masked)",
   "accountNumberLast4": "string (last 4 digits)",
@@ -754,7 +754,8 @@ Extract data from the following text into this exact JSON structure:
 }}
 
 RULES:
-1. Detect Date Format: Normalize all dates to YYYY-MM-DD.
+1. **CRITICAL CHECK**: If this document contains "Tax Invoice", "Bill To", "GSTIN", "Supply", and is clearly a bill from a vendor, set "documentType" to "INVOICE" and return immediately.
+2. Detect Date Format: Normalize all dates to YYYY-MM-DD.
 2. Description: Combine multi-line descriptions if they belong to the same transaction.
 3. Debits/Credits: Identify columns correctly. 'Dr' or 'Withdrawal' or 'Debit' is Withdrawal. 'Cr' or 'Deposit' or 'Credit' is Deposit.
 4. If a transaction has no value in Withdrawal/Deposit, set it to 0.
@@ -870,6 +871,8 @@ Return VALID JSON ONLY with the following fields (matches React Schema):
   ]
 
 IMPORTANT RULES:
+1. **CRITICAL CHECK**: If this document looks like a BILL, TAX INVOICE, or RECEIPT (has GSTIN, Supplier Name, Item list), set `documentType` to "INVOICE".
+2. If it is a Bank Statement, set `documentType` to "BANK_STATEMENT".
 - Extract account number from the statement header
 - VoucherType:
   - Withdrawal → Payment
