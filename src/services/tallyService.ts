@@ -706,7 +706,7 @@ export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string>
 
   let mastersXml = `
     <TALLYMESSAGE xmlns:UDF="TallyUDF"><UNIT NAME="Nos" ACTION="Create"><NAME>Nos</NAME><ISSIMPLEUNIT>Yes</ISSIMPLEUNIT></UNIT></TALLYMESSAGE>
-    <TALLYMESSAGE xmlns:UDF="TallyUDF"><GROUP NAME="${ledgerParentGroup}" ACTION="Create"><NAME.LIST><NAME>${ledgerParentGroup}</NAME></NAME.LIST><PARENT>Primary</PARENT></GROUP></TALLYMESSAGE>`;
+    <TALLYMESSAGE xmlns:UDF="TallyUDF"><GROUP NAME="${ledgerParentGroup}" ACTION="Create"><NAME.LIST><NAME>${ledgerParentGroup}</NAME></NAME.LIST></GROUP></TALLYMESSAGE>`;
 
   if (!existingLedgers.has(partyName)) {
     mastersXml += `<TALLYMESSAGE xmlns:UDF="TallyUDF"><LEDGER NAME="${esc(partyName)}" ACTION="Create"><NAME.LIST><NAME>${esc(partyName)}</NAME></NAME.LIST><PARENT>${partyGroup}</PARENT><ISBILLWISEON>Yes</ISBILLWISEON><ISGSTAPPLICABLE>Yes</ISGSTAPPLICABLE><ADDRESS.LIST><ADDRESS>${esc(partyAddress)}</ADDRESS></ADDRESS.LIST>${partyGstin ? `<PARTYGSTIN>${esc(partyGstin)}</PARTYGSTIN>` : ''}${partyState ? `<STATENAME>${esc(partyState)}</STATENAME>` : ''}</LEDGER></TALLYMESSAGE>`;
@@ -717,7 +717,7 @@ export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string>
     const rate = Number(item.gstRate) || 0;
     uniqueRates.add(rate);
     const itemName = cleanName(item.description) || `Item @ ${rate}%`;
-    mastersXml += `<TALLYMESSAGE xmlns:UDF="TallyUDF"><STOCKITEM NAME="${esc(itemName)}" ACTION="Create"><NAME.LIST><NAME>${esc(itemName)}</NAME></NAME.LIST><PARENT>Primary</PARENT><BASEUNITS>Nos</BASEUNITS><OPENINGBALANCE>0 Nos</OPENINGBALANCE><ISGSTAPPLICABLE>Yes</ISGSTAPPLICABLE><GSTRATE>${rate}</GSTRATE></STOCKITEM></TALLYMESSAGE>`;
+    mastersXml += `<TALLYMESSAGE xmlns:UDF="TallyUDF"><STOCKITEM NAME="${esc(itemName)}" ACTION="Create"><NAME.LIST><NAME>${esc(itemName)}</NAME></NAME.LIST><BASEUNITS>Nos</BASEUNITS><OPENINGBALANCE>0 Nos</OPENINGBALANCE><ISGSTAPPLICABLE>Yes</ISGSTAPPLICABLE><GSTRATE>${rate}</GSTRATE></STOCKITEM></TALLYMESSAGE>`;
   });
 
   // Create tax ledgers - now we create both IGST and CGST/SGST ledgers to handle mixed items

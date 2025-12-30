@@ -2,7 +2,7 @@ services:
   - type: web
     name: server1000
     env: python
-    pythonVersion: 3.11.9
+    pythonVersion: 3.11
     buildCommand: |
       apt-get update && apt-get install -y poppler-utils
       pip install -r requirements.txt

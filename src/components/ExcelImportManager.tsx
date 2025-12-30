@@ -3,8 +3,10 @@ import { FileSpreadsheet, ArrowRight, ArrowLeft, Loader2, CheckCircle2, AlertTri
 import { read, utils, writeFile } from 'xlsx';
 import { ExcelVoucher, ProcessedFile } from '../types';
 import { generateBulkExcelXml, pushToTally, fetchExistingLedgers, analyzeLedgerRequirements, fetchOpenCompanies, checkTallyConnection, tallyRound } from '../services/tallyService';
+import { saveInvoiceRegistry, checkInvoiceExists, getInvoiceRegistry } from '../services/dbService';
 import { v4 as uuidv4 } from 'uuid';
 import TallyDisconnectedModal from './TallyDisconnectedModal';
+import ImportSummaryModal from './ImportSummaryModal';
 
 
 interface ExcelImportManagerProps {
@@ -81,6 +83,10 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
     const [allColumns, setAllColumns] = useState<string[]>([]);
     const [showNotification, setShowNotification] = useState(false);
     const [isDragOver, setIsDragOver] = useState(false);
+
+    // Import Summary State
+    const [summaryModalOpen, setSummaryModalOpen] = useState(false);
+    const [importSummary, setImportSummary] = useState({ total: 0, skipped: 0, success: 0, failed: 0 });
 
     const [mapping, setMapping] = useState({
         voucherType: '',
@@ -717,6 +723,10 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
 
 
         const vouchers = Array.from(groupedMap.values());
+
+        // Registry save moved to Push phase
+
+
         setMappedData(vouchers);
         setProgress({ processed: 0, total: vouchers.length, batch: 0, errors: 0 });
         setStep(3);
@@ -734,28 +744,82 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
 
         setIsProcessing(true);
         if (onUpdateFile && fileId) onUpdateFile(fileId, { status: 'Processing' });
+
         try {
-            const total = mappedData.length;
+            // 1. Filter Duplicates
+            const allRegistry = await getInvoiceRegistry();
+            const existingNumbers = new Set(allRegistry.map(r => r.invoiceNumber.toLowerCase()));
+
+            const newVouchers: ExcelVoucher[] = [];
+            let skippedCount = 0;
+
+            for (const v of mappedData) {
+                if (v.invoiceNo && existingNumbers.has(v.invoiceNo.toLowerCase())) {
+                    skippedCount++;
+                } else {
+                    newVouchers.push(v);
+                }
+            }
+
+            if (newVouchers.length === 0) {
+                onPushLog('Failed', 'Bulk Import Skipped', `All ${mappedData.length} entries are duplicates.`);
+                if (onUpdateFile && fileId) onUpdateFile(fileId, { status: 'Success' });
+
+                setImportSummary({
+                    total: mappedData.length,
+                    skipped: skippedCount,
+                    success: 0,
+                    failed: 0
+                });
+                setSummaryModalOpen(true);
+                setIsProcessing(false);
+                return;
+            }
+
+            const total = newVouchers.length;
             const totalBatches = Math.ceil(total / BATCH_SIZE);
             let createdMasters = new Set<string>();
-            // try { const existing = await fetchExistingLedgers(selectedCompany); createdMasters = new Set(existing); } catch { }
             let errorCount = 0;
+            let successCount = 0;
+
             for (let i = 0; i < totalBatches; i++) {
                 const end = (i + 1) * BATCH_SIZE;
-                const batch = mappedData.slice(i * BATCH_SIZE, end);
+                const batch = newVouchers.slice(i * BATCH_SIZE, end);
                 const xml = generateBulkExcelXml(batch, createdMasters, selectedCompany);
                 const result = await pushToTally(xml);
-                if (!result.success) errorCount += batch.length;
+
+                if (!result.success) {
+                    errorCount += batch.length;
+                } else {
+                    successCount += batch.length;
+                    // Save to registry only on success
+                    batch.forEach(v => {
+                        if (v.invoiceNo) saveInvoiceRegistry(v.invoiceNo, 'EXCEL');
+                    });
+                }
+
                 setProgress({ processed: Math.min(end, total), total, batch: i + 1, errors: errorCount });
                 await new Promise(r => setTimeout(r, 100));
             }
+
+            const summaryMsg = `Skipped (Duplicates): ${skippedCount}\nSuccessfully Pushed: ${successCount}\nFailed: ${errorCount}`;
+
             if (errorCount > 0) {
-                onPushLog('Failed', 'Bulk Import with Errors', `Finished with ${errorCount} failures.`);
+                onPushLog('Failed', 'Bulk Import Completed with Errors', summaryMsg);
                 if (onUpdateFile && fileId) onUpdateFile(fileId, { status: 'Failed' });
             } else {
-                onPushLog('Success', 'Bulk Import Complete', `Successfully pushed ${total} merged vouchers.`);
+                onPushLog('Success', 'Bulk Import Complete', summaryMsg);
                 if (onUpdateFile && fileId) onUpdateFile(fileId, { status: 'Success' });
             }
+
+            setImportSummary({
+                total: mappedData.length,
+                skipped: skippedCount,
+                success: successCount,
+                failed: errorCount
+            });
+            setSummaryModalOpen(true);
+
         } catch (e) {
             onPushLog('Failed', 'Bulk Import Error', 'An error occurred during push.');
         } finally { setIsProcessing(false); }
@@ -1112,6 +1176,19 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     </div>
                 </div>
             </div>
+
+            {showDisconnectModal && (
+                <TallyDisconnectedModal
+                    onClose={() => setShowDisconnectModal(false)}
+                    onRetry={() => { setShowDisconnectModal(false); startBulkPush(); }}
+                />
+            )}
+
+            <ImportSummaryModal
+                isOpen={summaryModalOpen}
+                onClose={() => setSummaryModalOpen(false)}
+                summary={importSummary}
+            />
         </div>
     );
 };

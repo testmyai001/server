@@ -15,10 +15,11 @@ import { InvoiceData, LogEntry, AppView, ProcessedFile, Message } from './types'
 import { ArrowRight, CheckCircle2, X, FileText, AlertTriangle, CloudUpload, LayoutDashboard } from 'lucide-react';
 import { checkTallyConnection, fetchExistingLedgers, generateTallyXml, pushToTally } from './services/tallyService';
 import { processDocumentWithAI } from './services/backendService';
-import { saveInvoiceToDB, saveLogToDB, deleteUploadFromDB } from './services/dbService';
+import { saveInvoiceToDB, saveLogToDB, deleteUploadFromDB, saveInvoiceRegistry, checkInvoiceExists, getInvoiceRegistry } from './services/dbService';
 import { TALLY_API_URL, EMPTY_INVOICE, BACKEND_API_KEY } from './constants';
 import { v4 as uuidv4 } from 'uuid';
 import TallyDisconnectedModal from './components/TallyDisconnectedModal';
+import ImportSummaryModal from './components/ImportSummaryModal';
 
 
 const App: React.FC = () => {
@@ -60,6 +61,10 @@ const App: React.FC = () => {
 
     const [isPushing, setIsPushing] = useState(false);
     const [shouldAutoTriggerUpload, setShouldAutoTriggerUpload] = useState(false);
+
+    // Import Summary State
+    const [summaryModalOpen, setSummaryModalOpen] = useState(false);
+    const [importSummary, setImportSummary] = useState<{ total: number, skipped: number, success: number, failed: number, errors?: string[] }>({ total: 0, skipped: 0, success: 0, failed: 0 });
 
     // Toast
     const [toast, setToast] = useState<{ show: boolean, message: string }>({ show: false, message: '' });
@@ -255,6 +260,8 @@ const App: React.FC = () => {
             }));
 
             saveInvoiceToDB(data, 'Ready', entry.id);
+            saveInvoiceToDB(data, 'Ready', entry.id);
+            // Removed auto-save to registry. Registry save happens only on final confirmation/push.
             setToast({ show: true, message: `${entry.fileName} processed successfully` });
 
         } catch (error) {
@@ -338,10 +345,10 @@ const App: React.FC = () => {
         }
     };
 
-    const handleSaveInvoice = (data: InvoiceData, switchTab: boolean = true) => {
+    const handleSaveInvoice = (data: InvoiceData, switchTab: boolean = true, silent: boolean = false) => {
         setCurrentInvoice(data);
         if (switchTab) setActiveTab('xml');
-        else setToast({ show: true, message: "Invoice updated successfully" });
+        else if (!silent) setToast({ show: true, message: "Invoice updated successfully" });
 
         if (currentFile) {
             const { correct, incorrect } = calculateEntryStats(data);
@@ -350,6 +357,15 @@ const App: React.FC = () => {
             setProcessedFiles(prev => prev.map(f => f.file === currentFile ? { ...f, data, correctEntries: correct, incorrectEntries: incorrect } : f));
 
             if (fileEntry) saveInvoiceToDB(data, fileEntry.status, fileEntry.id);
+        }
+
+        if (data.invoiceNumber && !silent) {
+            // Check for duplicates purely for UI warning in editor (non-blocking)
+            checkInvoiceExists(data.invoiceNumber).then(exists => {
+                if (exists) {
+                    setToast({ show: true, message: `Warning: Invoice ${data.invoiceNumber} is already registered.` });
+                }
+            });
         }
     };
 
@@ -365,7 +381,7 @@ const App: React.FC = () => {
 
     const handleDeleteFile = (fileId?: string) => {
         const targetFileEntry = fileId ? processedFiles.find(f => f.id === fileId) : (currentFile ? processedFiles.find(f => f.file === currentFile) : undefined);
-        
+
         if (!targetFileEntry) return;
 
         // 1. Delete from DB
@@ -403,11 +419,11 @@ const App: React.FC = () => {
 
         if (nextInvoice && updatedFiles.some(f => f.id === nextInvoice?.id)) {
             // Wait a tick or just update current
-             // Since handleViewInvoice relies on processedFiles state (which is stale in this closure),
-             // We manually do what handleViewInvoice does:
-             setCurrentFile(nextInvoice.file);
-             if (nextInvoice.data) setCurrentInvoice(nextInvoice.data);
-             // handleViewInvoice(nextInvoice); // This might use old state if it uses processedFiles.find
+            // Since handleViewInvoice relies on processedFiles state (which is stale in this closure),
+            // We manually do what handleViewInvoice does:
+            setCurrentFile(nextInvoice.file);
+            if (nextInvoice.data) setCurrentInvoice(nextInvoice.data);
+            // handleViewInvoice(nextInvoice); // This might use old state if it uses processedFiles.find
         } else {
             // No other invoices found
             setCurrentFile(undefined);
@@ -461,11 +477,42 @@ const App: React.FC = () => {
         const validationError = validateInvoiceForPush(invoice);
         if (validationError) {
             setToast({ show: true, message: validationError });
-
             if (fileId) {
                 setProcessedFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'Failed', error: validationError } : f));
             }
             return;
+        }
+
+        // 1. Duplicate Check
+        if (invoice.invoiceNumber) {
+            const exists = await checkInvoiceExists(invoice.invoiceNumber);
+            if (exists) {
+                // Show Summary Modal instead of Toast
+                setImportSummary({ total: 1, skipped: 1, success: 0, failed: 0 });
+                setSummaryModalOpen(true);
+                
+                // Still log internally but silent
+                const msg = `Skipped: Invoice ${invoice.invoiceNumber} already exists.`;
+                const log: LogEntry = {
+                    id: uuidv4(), timestamp: new Date(), method: 'POST', endpoint: TALLY_API_URL, 
+                    status: 'Failed', message: 'Duplicate Skipped', response: msg 
+                };
+                setLogs(prev => [log, ...prev]);
+                saveLogToDB(log);
+
+                if (fileId) {
+                    setProcessedFiles(prev => prev.map(f => {
+                        if (f.id === fileId) {
+                            // If already success, don't revert to Failed. 
+                            // This prevents "Success" -> "Failed" if user clicks push again.
+                            if (f.status === 'Success') return f;
+                            return { ...f, status: 'Failed', error: 'Duplicate Invoice Number' };
+                        } 
+                        return f;
+                    }));
+                }
+                return;
+            }
         }
 
         // Pre-check Connection
@@ -510,16 +557,41 @@ const App: React.FC = () => {
                 saveInvoiceToDB(invoice, newStatus, fileId);
             }
 
-        } catch (error) {
+            if (result.success && invoice.invoiceNumber) {
+                saveInvoiceRegistry(invoice.invoiceNumber, 'OCR');
+            }
+
+            // Show Summary Modal
+            setImportSummary({ 
+                total: 1, 
+                skipped: 0, 
+                success: result.success ? 1 : 0, 
+                failed: result.success ? 0 : 1,
+                errors: result.success ? [] : [result.message]
+            });
+            setSummaryModalOpen(true);
+
+        } catch (error: any) {
             setIsPushing(false);
+            // Show Failure in Modal
+            setImportSummary({ 
+                total: 1, 
+                skipped: 0, 
+                success: 0, 
+                failed: 1,
+                errors: [error.message || 'Unknown error occurred']
+             });
+            setSummaryModalOpen(true);
         } finally {
             setIsPushing(false);
         }
     };
 
     const handleEditorPush = async (data: InvoiceData) => {
-        handleSaveInvoice(data, false);
-        await handlePushToTally(data);
+        handleSaveInvoice(data, false, true); // Silent save: No toasts
+        // Find the file ID for the current file to update status
+        const fileEntry = processedFiles.find(f => f.file === currentFile);
+        await performPush(data, fileEntry?.id);
     };
 
     const handleBulkPushToTally = async () => {
@@ -534,27 +606,59 @@ const App: React.FC = () => {
         }
 
         setIsPushing(true);
+        let skipped = 0;
+        let success = 0;
+        let failed = 0;
+
+        // Fetch Registry once
+        const allRegistry = await getInvoiceRegistry();
+        const existingNumbers = new Set(allRegistry.map(r => r.invoiceNumber.toLowerCase()));
+        
+        const errors: string[] = [];
+
         for (const file of readyFiles) {
-            if (file.data) {
-                // Pass checkConnection=false to avoid re-checking every single time in the loop, 
-                // but performPush usually checks inside. 
-                // Actually performPush now has a check at top. 
-                // We should refactor performPush to optionally skip check or just let it check (it's fast localhost).
-                // For safety and strictness requested by user "if tally not connected entries should not push", checking every time is safer but slower.
-                // However, since we defined the check in performPush, it will open the modal for EACH failed push if we loop.
-                // That might be annoying.
-                // Let's modify performPush to accept a "skipCheck" param or handle it.
-                // For now, let's just let it execute. If connection drops mid-way, it SHOULD stop.
-                // But if it's already disconnected, the loop will try to open the modal multiple times?
-                // No, setShowTallyDisconnectModal(true) is idempotent.
-                // But the loop continues. We need to break if performPush returns early.
-                // performPush is async void. We can't easily know if it failed due to connection.
-                // Let's rely on the user fixing it.
-                await performPush(file.data, file.id);
-                await new Promise(resolve => setTimeout(resolve, 500));
+            if (file.data && file.data.invoiceNumber) {
+                // Check duplicate
+                if (existingNumbers.has(file.data.invoiceNumber.toLowerCase())) {
+                    skipped++;
+                    // Mark as Failed/Duplicate in UI
+                    setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Failed', error: 'Duplicate Invoice' } : f));
+                    continue;
+                }
+
+                // Push
+                const existingLedgers = await fetchExistingLedgers(file.data.targetCompany);
+                const xml = generateTallyXml(file.data, existingLedgers);
+                const result = await pushToTally(xml);
+
+                if (result.success) {
+                    success++;
+                    setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Success' } : f));
+                    saveInvoiceToDB(file.data, 'Success', file.id);
+                    saveInvoiceRegistry(file.data.invoiceNumber, 'OCR');
+                    // Add to local set to prevent duplicate within same batch
+                    existingNumbers.add(file.data.invoiceNumber.toLowerCase());
+                } else {
+                    failed++;
+                    errors.push(`${file.data.invoiceNumber}: ${result.message}`);
+                    setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Failed', error: result.message } : f));
+                    saveInvoiceToDB(file.data, 'Failed', file.id);
+                }
+            } else {
+                failed++; // Missing data/invoice number
+                errors.push('Missing Invoice Number or Data');
             }
         }
+        
         setIsPushing(false);
+        setImportSummary({ 
+            total: readyFiles.length,
+            skipped,
+            success,
+            failed,
+            errors
+        });
+        setSummaryModalOpen(true);
     };
 
     const handleDownload = (file: ProcessedFile) => {
@@ -832,6 +936,11 @@ const App: React.FC = () => {
             {showTallyDisconnectModal && (
                 <TallyDisconnectedModal onClose={() => setShowTallyDisconnectModal(false)} />
             )}
+            <ImportSummaryModal 
+                isOpen={summaryModalOpen}
+                onClose={() => setSummaryModalOpen(false)}
+                summary={importSummary}
+            />
             {invalidFileAlert.show && <InvalidFileModal fileName={invalidFileAlert.fileName} reason={invalidFileAlert.reason} onClose={() => setInvalidFileAlert({ show: false, fileName: '', reason: '' })} />}
             {mismatchedFileAlert.show && mismatchedFileAlert.file && (
                 <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">

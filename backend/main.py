@@ -9,16 +9,10 @@ from google.generativeai.types import GenerationConfig
 from google.api_core.exceptions import ResourceExhausted
 from pdf_processor import split_pdf_to_images, get_pdf_page_count
 import hashlib
-from sqlalchemy.orm import Session
-import database
-import models
-import schemas
 
 # Load environment variables
 load_dotenv()
 
-# Create Database Tables
-models.Base.metadata.create_all(bind=database.engine)
 
 app = FastAPI(title="AutoTally Backend API")
 
@@ -324,7 +318,6 @@ async def process_document(
         
         # Calculate file hash for duplicate detection
         file_hash = hashlib.sha256(file_bytes).hexdigest()
-        
         import base64, json
         b64 = base64.b64encode(file_bytes).decode('utf-8')
 
@@ -908,162 +901,6 @@ IMPORTANT RULES:
         raise HTTPException(status_code=500, detail=f"Failed to process bank statement: {str(e)}")
 
 
-# ================= DATABASE ENDPOINTS =================
-
-@app.post("/invoices", response_model=schemas.InvoiceResponse)
-async def create_invoice(
-    invoice: schemas.InvoiceCreate,
-    db: Session = Depends(database.get_db),
-    authorization: str = Header(None)
-):
-    """Save an invoice to the database. Checks for duplicates."""
-    validate_api_key(authorization)
-    
-    # Check for duplicate file hash
-    if invoice.fileHash:
-        existing_file = db.query(models.UploadedFile).filter(models.UploadedFile.file_hash == invoice.fileHash).first()
-        if existing_file:
-             # Logic: If file exists, check if invoice is also saved.
-             # For now, we allow saving if the user confirmed, but we could block it.
-             # The prompt asks for "Duplicate protection logic".
-             # We'll check if the invoice number + supplier GSTIN exists.
-             pass
-        else:
-            # Register file
-            new_file = models.UploadedFile(
-                file_hash=invoice.fileHash,
-                filename=f"Invoice_{invoice.invoiceNumber}.pdf", # Placeholder name
-                file_type="INVOICE"
-            )
-            db.add(new_file)
-            db.commit()
-
-    # Check for duplicate Invoice (Supplier GSTIN + Invoice Number)
-    if invoice.supplierGstin and invoice.invoiceNumber:
-        existing_invoice = db.query(models.Invoice).filter(
-            models.Invoice.supplier_gstin == invoice.supplierGstin,
-            models.Invoice.invoice_number == invoice.invoiceNumber
-        ).first()
-        
-        if existing_invoice:
-            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoiceNumber} from {invoice.supplierName} already exists.")
-
-    # Create Invoice
-    db_invoice = models.Invoice(
-        invoice_number=invoice.invoiceNumber,
-        invoice_date=invoice.invoiceDate,
-        supplier_name=invoice.supplierName,
-        supplier_gstin=invoice.supplierGstin,
-        buyer_name=invoice.buyerName,
-        buyer_gstin=invoice.buyerGstin,
-        total_amount=invoice.total,
-        taxable_value=invoice.taxableValue,
-        file_hash=invoice.fileHash,
-        status="PENDING"
-    )
-    db.add(db_invoice)
-    db.commit()
-    db.refresh(db_invoice)
-
-    # Create Line Items
-    for item in invoice.lineItems:
-        db_item = models.InvoiceItem(
-            invoice_id=db_invoice.id,
-            description=item.description,
-            hsn=item.hsn,
-            quantity=item.quantity,
-            rate=item.rate,
-            amount=item.amount,
-            gst_rate=item.gstRate,
-            unit=item.unit
-        )
-        db.add(db_item)
-    
-    db.commit()
-    db.refresh(db_invoice)
-    return db_invoice
-
-@app.get("/invoices", response_model=List[schemas.InvoiceResponse])
-async def list_invoices(
-    skip: int = 0, 
-    limit: int = 100,
-    db: Session = Depends(database.get_db),
-    authorization: str = Header(None)
-):
-    """List invoices from database"""
-    validate_api_key(authorization)
-    invoices = db.query(models.Invoice).offset(skip).limit(limit).all()
-    return invoices
-
-@app.post("/tally/log", response_model=schemas.TallyLogResponse)
-async def log_tally_push(
-    log: schemas.TallyLogCreate,
-    db: Session = Depends(database.get_db),
-    authorization: str = Header(None)
-):
-    """Log a Tally push event (audit trail)"""
-    validate_api_key(authorization)
-    
-    db_log = models.TallyLog(
-        entity_type=log.entity_type,
-        entity_id=log.entity_id,
-        action=log.action,
-        status=log.status,
-        message=log.message
-    )
-    db.add(db_log)
-    
-    # Update entity status if successful
-    if log.status == "SUCCESS" and log.entity_type == "INVOICE":
-        # Find invoice and update status
-        try:
-            # entity_id might be the database ID or invoice number. Assuming Database ID for robustness.
-            # If it's a string ID, try converting to int
-            invoice_id = int(log.entity_id)
-            invoice = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
-            if invoice:
-                invoice.status = "SYNCED"
-        except:
-            pass # If ID lookup fails, just log
-            
-    db.commit()
-    db.refresh(db_log)
-    return db_log
-
-@app.post("/bank-transactions", response_model=List[schemas.BankTransactionResponse])
-async def save_bank_transactions(
-    transactions: List[schemas.BankTransactionCreate],
-    db: Session = Depends(database.get_db),
-    authorization: str = Header(None)
-):
-    """Save bank transactions"""
-    validate_api_key(authorization)
-    
-    saved_txns = []
-    for txn in transactions:
-        # Check if ID exists
-        existing = db.query(models.BankTransaction).filter(models.BankTransaction.id == txn.id).first()
-        if not existing:
-            db_txn = models.BankTransaction(
-                id=txn.id,
-                date=txn.date,
-                description=txn.description,
-                withdrawal=txn.withdrawal,
-                deposit=txn.deposit,
-                balance=txn.balance,
-                voucher_type=txn.voucherType,
-                contra_ledger=txn.contraLedger,
-                status="PENDING"
-            )
-            db.add(db_txn)
-            saved_txns.append(db_txn)
-    
-    db.commit()
-    # Refresh all to get created_at
-    for t in saved_txns:
-        db.refresh(t)
-        
-    return saved_txns
 
 
 if __name__ == "__main__":

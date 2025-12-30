@@ -23,7 +23,7 @@
       "TallyAiLogo00.ico"
     ],
     "directories": {
-      "output": "release_v14"
+      "output": "release_v16"
     },
     "win": {
       "target": "nsis",

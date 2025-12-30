@@ -2,7 +2,13 @@
 import { InvoiceData, BankStatementData, LogEntry, ProcessedFile } from '../types';
 
 const DB_NAME = 'AutoTallyDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+
+export interface InvoiceRegistryEntry {
+  invoiceNumber: string;
+  source: string; // 'OCR' | 'EXCEL'
+  timestamp: number;
+}
 
 class AutoTallyDB {
   private db: IDBDatabase | null = null;
@@ -21,6 +27,9 @@ class AutoTallyDB {
         }
         if (!db.objectStoreNames.contains('logs')) {
           db.createObjectStore('logs', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('invoice_numbers')) {
+          db.createObjectStore('invoice_numbers', { keyPath: 'invoiceNumber' });
         }
       };
 
@@ -84,6 +93,38 @@ class AutoTallyDB {
     const store = tx.objectStore('uploads');
     await store.delete(id);
   }
+
+  async saveInvoiceEntry(entry: InvoiceRegistryEntry) {
+    const db = await this.init();
+    const tx = db.transaction('invoice_numbers', 'readwrite');
+    const store = tx.objectStore('invoice_numbers');
+    await store.put(entry);
+  }
+
+  async getAllInvoiceEntries(): Promise<InvoiceRegistryEntry[]> {
+    const db = await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('invoice_numbers', 'readonly');
+      const store = tx.objectStore('invoice_numbers');
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async checkInvoiceExists(invoiceNumber: string): Promise<boolean> {
+    const db = await this.init();
+    const tx = db.transaction('invoice_numbers', 'readonly');
+    const store = tx.objectStore('invoice_numbers');
+    
+    return new Promise((resolve, reject) => {
+      const request = store.get(invoiceNumber);
+      request.onsuccess = () => {
+        resolve(!!request.result);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
 }
 
 const dbInstance = new AutoTallyDB();
@@ -119,6 +160,24 @@ export const deleteUploadFromDB = async (id: string) => {
   await dbInstance.deleteUpload(id);
 };
 
+
 export const clearLocalDatabase = async () => {
   await dbInstance.clearAll();
+};
+
+export const saveInvoiceRegistry = async (invoiceNumber: string, source: string) => {
+  if (!invoiceNumber) return;
+  await dbInstance.saveInvoiceEntry({
+    invoiceNumber: invoiceNumber.trim(),
+    source,
+    timestamp: Date.now()
+  });
+};
+
+export const getInvoiceRegistry = async () => {
+  return await dbInstance.getAllInvoiceEntries();
+};
+
+export const checkInvoiceExists = async (invoiceNumber: string) => {
+  return await dbInstance.checkInvoiceExists(invoiceNumber);
 };
