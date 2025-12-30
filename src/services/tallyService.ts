@@ -900,7 +900,7 @@ export const fetchOpenCompanies = async (): Promise<string[]> => {
     // Fallback: If we got a valid response but couldn't extract name, 
     // return a generic name so the app doesn't think Tally is offline
     if (text.includes('<ENVELOPE>') || text.includes('<LEDGER')) {
-      console.log('⚠️ Tally connected but company name not found, using current company');
+      // console.log('⚠️ Tally connected but company name not found, using current company');
       return ['Current Company'];
     }
 

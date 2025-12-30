@@ -11,7 +11,9 @@ from pdf_processor import split_pdf_to_images, get_pdf_page_count
 import hashlib
 
 # Load environment variables
-load_dotenv()
+# Load environment variables from the root directory
+import os
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 
 app = FastAPI(title="AutoTally Backend API")
@@ -132,9 +134,10 @@ async def gemini_proxy(
         )
     
     # Debug: Check if key is being loaded
-    print(f"GEMINI_API_KEY loaded: {GEMINI_API_KEY[:10]}...{GEMINI_API_KEY[-4:]}")
-    print(f"Key length: {len(GEMINI_API_KEY)}")
-    
+    if GEMINI_API_KEY:
+         print(f"GEMINI_API_KEY loaded successfully (Length: {len(GEMINI_API_KEY)})")
+    else:
+         print("ERROR: GEMINI_API_KEY is not set")
     try:
         # Configure Gemini with server's API key
         genai.configure(api_key=GEMINI_API_KEY)
@@ -259,7 +262,8 @@ async def chat(
             print("ERROR: GEMINI_API_KEY is missing")
             raise HTTPException(status_code=500, detail="Gemini API key not configured on server")
 
-        print(f"DEBUG: Using Gemini Key: {GEMINI_API_KEY[:5]}... (Length: {len(GEMINI_API_KEY)})")
+        if GEMINI_API_KEY:
+            print(f"DEBUG: Using Gemini Key (Length: {len(GEMINI_API_KEY)})")
 
         genai.configure(api_key=GEMINI_API_KEY)
         if request.system_instruction:

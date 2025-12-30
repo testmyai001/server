@@ -218,7 +218,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                             if (score > maxScore) { maxScore = score; headerRowIndex = i; }
                         }
                         const header = (data[headerRowIndex] || []).map(String);
-                        console.log('External file - Detected header row:', headerRowIndex, 'Headers:', header);
+                        // console.log('External file - Detected header row:', headerRowIndex, 'Headers:', header);
                         setAllColumns(header);
                         setRawData(data.slice(headerRowIndex + 1));
 
@@ -305,7 +305,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
         setLoadingCompanies(true);
         try {
             const list = await fetchOpenCompanies();
-            console.log('Loaded companies:', list);
+            // console.log('Loaded companies:', list);
             setCompanies(list);
             if (list.length > 0 && !selectedCompany) setSelectedCompany(list[0]);
         } catch (e) {
@@ -344,7 +344,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
 
                 // Get the sheet range - but don't trust it blindly
                 const originalRef = ws['!ref'] || 'A1';
-                console.log('Original Excel range:', originalRef);
+                // console.log('Original Excel range:', originalRef);
 
                 // Force reading all possible columns by checking for any cell data
                 // Some Excel files have incorrect !ref that cuts off columns
@@ -368,7 +368,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                         e: { r: refRange.e.r, c: maxCol }
                     });
                     ws['!ref'] = newRef;
-                    console.log('Extended Excel range to:', newRef, 'Columns:', maxCol + 1);
+                    // console.log('Extended Excel range to:', newRef, 'Columns:', maxCol + 1);
                 }
 
                 // Use defval to ensure all columns are captured including empty cells
@@ -381,7 +381,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                         maxColumns = row.length;
                     }
                 });
-                console.log('Maximum columns found in data:', maxColumns);
+                // console.log('Maximum columns found in data:', maxColumns);
 
                 if (data.length > 0) {
                     let headerRowIndex = 0;
@@ -396,7 +396,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                         if (score > maxScore) { maxScore = score; headerRowIndex = i; }
                     }
                     const header = (data[headerRowIndex] || []).map(String);
-                    console.log('Detected header row:', headerRowIndex, 'Headers:', header);
+                    // console.log('Detected header row:', headerRowIndex, 'Headers:', header);
                     setAllColumns(header);
                     setRawData(data.slice(headerRowIndex + 1));
 
@@ -828,8 +828,8 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
 
 
     // Debug: Log detected columns
-    console.log('All columns detected:', allColumns);
-    console.log('Visible columns for dropdown:', visibleColumns);
+    // console.log('All columns detected:', allColumns);
+    // console.log('Visible columns for dropdown:', visibleColumns);
     const pct = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
 
     if (step === 1) {
