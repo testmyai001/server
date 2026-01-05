@@ -77,7 +77,7 @@ TOKEN_USAGE_FILE = os.path.join(os.path.dirname(__file__), "token_usage.json")
 PLAN_LIMITS = {
     "Bronze": 50000,
     "Gold": 100000,
-    "Platinum": 500000
+    "Platinum": 200000
 }
 
 def load_token_usage() -> dict:

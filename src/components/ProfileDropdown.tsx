@@ -119,7 +119,7 @@ const ProfileDropdown: React.FC<ProfileDropdownProps> = ({ userName, tokenData, 
                                 <span className="text-white font-bold">{tokenData?.used || 0}</span> used
                             </span>
                             <span className="text-slate-400">
-                                <span className="text-white font-bold">{tokenData?.limit || 1000}</span> limit
+                                <span className="text-white font-bold">{tokenData?.limit?.toLocaleString() || '50,000'}</span> limit
                             </span>
                         </div>
 
@@ -137,7 +137,7 @@ const ProfileDropdown: React.FC<ProfileDropdownProps> = ({ userName, tokenData, 
                                 <p className="text-xs font-bold text-slate-400 mb-2">Select Plan:</p>
                                 {(['Bronze', 'Gold', 'Platinum'] as const).map((plan) => {
                                     const Icon = PLAN_ICONS[plan];
-                                    const limits = { Bronze: 1000000, Gold: 5000000, Platinum: 10000000 };
+                                    const limits = { Bronze: 50000, Gold: 100000, Platinum: 200000 };
                                     const isActive = tokenData?.plan === plan;
                                     return (
                                         <button

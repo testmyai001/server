@@ -75,7 +75,7 @@ const TokenLimitModal: React.FC<TokenLimitModalProps> = ({ isOpen, onClose, onOp
                             <div className="flex-1">
                                 <p className="font-bold text-indigo-900 dark:text-indigo-300 text-sm">Upgrade Your Plan</p>
                                 <p className="text-xs text-indigo-700 dark:text-indigo-400 mt-1">
-                                    Get more tokens monthly by upgrading to Gold (5,000) or Platinum (10,000)
+                                    Get more tokens monthly by upgrading to Gold (100,000) or Platinum (200,000)
                                 </p>
                             </div>
                         </div>
