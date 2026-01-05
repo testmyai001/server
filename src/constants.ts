@@ -20,8 +20,8 @@ import { InvoiceData } from './types';
  */
 
 // Backend API Configuration - AI & Data Only (No Tally)
-export const BACKEND_API_URL = import.meta.env.VITE_BACKEND_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-export const BACKEND_API_KEY = import.meta.env.VITE_BACKEND_API_KEY;
+export const BACKEND_API_URL = localStorage.getItem('backend_api_url') || import.meta.env.VITE_BACKEND_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const BACKEND_API_KEY = localStorage.getItem('backend_api_key') || import.meta.env.VITE_BACKEND_API_KEY;
 
 // Tally Prime runs on port 9000 - Connected DIRECTLY from React only
 // Tally Prime runs on port 9000 - Connected via Proxy to avoid CORS
@@ -30,7 +30,7 @@ const getTallyUrl = () => {
   // If user has set a custom URL in settings, use it
   const customUrl = localStorage.getItem('tally_api_url');
   if (customUrl) return customUrl;
-  
+
   // Default logic
   return import.meta.env.DEV ? '/tally' : (import.meta.env.VITE_TALLY_API_URL || 'http://127.0.0.1:9000');
 };

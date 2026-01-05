@@ -38,10 +38,19 @@ const ProfileDropdown: React.FC<ProfileDropdownProps> = ({ userName, tokenData, 
     }, []);
 
     const handlePlanChange = async (plan: string) => {
-        const success = await setPlan(BACKEND_API_KEY, plan);
-        if (success) {
-            onRefreshTokenData();
-            setIsChangingPlan(false);
+        if (plan === tokenData?.plan) return;
+        
+        try {
+            const success = await setPlan(BACKEND_API_KEY, plan);
+            if (success) {
+                onRefreshTokenData();
+                setIsChangingPlan(false);
+            } else {
+                alert("Failed to update plan. Please check your backend connection.");
+            }
+        } catch (error) {
+            console.error("Plan update error:", error);
+            alert("An error occurred while updating the plan.");
         }
     };
 

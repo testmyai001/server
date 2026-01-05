@@ -1,7 +1,7 @@
 {
   "name": "taxblock-autotally-ai",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "AutoTallyAI - Automated Accounting & Tally Integration",
   "author": "Suraj Suryawanshi",
   "type": "module",
@@ -23,7 +23,7 @@
       "TallyAiLogo00.ico"
     ],
     "directories": {
-      "output": "release_v22"
+      "output": "release_v23"
     },
     "win": {
       "target": "nsis",
