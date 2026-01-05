@@ -52,7 +52,9 @@ origins = ["*"]
 # Add production origins from environment variable
 prod_origins = os.getenv("ALLOWED_ORIGINS", "")
 if prod_origins:
-    pass
+    # If production origins are set, use them and remove wildcard (unless explicitly included)
+    origins = [origin.strip() for origin in prod_origins.split(",") if origin.strip()]
+    print(f"✅ CORS Allowed Origins: {origins}")
 
 app.add_middleware(
     CORSMiddleware,
