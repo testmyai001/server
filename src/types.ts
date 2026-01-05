@@ -9,6 +9,7 @@ export interface LineItem {
   gstRate: number; // e.g., 18
   unit?: string; // e.g., Nos, Kg, Box
   isIGST?: boolean; // Optional: Force IGST even when GSTIN is not available
+  ledgerName?: string; // Mapped Ledger Name for Tally
 }
 
 export interface InvoiceData {
@@ -104,6 +105,7 @@ export interface LogEntry {
 export interface TallyResponse {
   success: boolean;
   message: string;
+  createdMasters?: string[];
 }
 
 export interface Message {
@@ -121,5 +123,6 @@ export enum AppView {
   CHAT = 'CHAT',
   IMAGE_ANALYSIS = 'IMAGE_ANALYSIS',
   BANK_STATEMENT = 'BANK_STATEMENT',
-  EXCEL_IMPORT = 'EXCEL_IMPORT'
+  EXCEL_IMPORT = 'EXCEL_IMPORT',
+  BULK_PROCESSING = 'BULK_PROCESSING'
 }

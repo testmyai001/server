@@ -3,6 +3,7 @@ import React, { useCallback, useState, useRef } from 'react';
 import { UploadCloud, Zap, History, FileUp, FileText, CheckCircle, ShieldCheck, ArrowRight, ArrowLeft, Loader2, Landmark, Sparkles, LayoutDashboard, Activity } from 'lucide-react';
 import { InvoiceData } from '../types';
 
+// Interface update
 interface InvoiceUploadProps {
   onFilesSelected: (files: File[]) => void;
   onRestoreDraft?: (data: InvoiceData) => void;
@@ -11,6 +12,7 @@ interface InvoiceUploadProps {
   isProcessing?: boolean;
   autoTrigger?: boolean;
   onAutoTriggered?: () => void;
+  onWarning?: (message: string) => void;
 }
 
 const InvoiceUpload: React.FC<InvoiceUploadProps> = ({
@@ -20,7 +22,8 @@ const InvoiceUpload: React.FC<InvoiceUploadProps> = ({
   onNavigateToLogs,
   isProcessing = false,
   autoTrigger = false,
-  onAutoTriggered
+  onAutoTriggered,
+  onWarning
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -40,13 +43,27 @@ const InvoiceUpload: React.FC<InvoiceUploadProps> = ({
     e.preventDefault();
     setIsDragOver(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      onFilesSelected(Array.from(e.dataTransfer.files));
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 50) {
+        const msg = "Batch limit exceeded. Only the first 50 files will be processed to ensure stability.";
+        if (onWarning) onWarning(msg); else alert(msg);
+        onFilesSelected(files.slice(0, 50));
+      } else {
+        onFilesSelected(files);
+      }
     }
-  }, [onFilesSelected]);
+  }, [onFilesSelected, onWarning]);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      onFilesSelected(Array.from(e.target.files));
+      const files = Array.from(e.target.files);
+      if (files.length > 50) {
+        const msg = "Batch limit exceeded. Only the first 50 files will be processed to ensure stability.";
+        if (onWarning) onWarning(msg); else alert(msg);
+        onFilesSelected(files.slice(0, 50));
+      } else {
+        onFilesSelected(files);
+      }
     }
   };
 

@@ -18,7 +18,8 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Check
+  Check,
+  Trash2
 } from 'lucide-react';
 import { ProcessedFile } from '../types';
 
@@ -35,6 +36,9 @@ interface DashboardProps {
   filterStatus: string;
   onFilterChange: (status: string) => void;
   onDownloadAll: () => void;
+  onDelete: (id: string) => void;
+  onDeleteAll: () => void;
+  onPush: (file: ProcessedFile) => void;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({
@@ -49,7 +53,10 @@ const Dashboard: React.FC<DashboardProps> = ({
   onSearchChange,
   filterStatus,
   onFilterChange,
-  onDownloadAll
+  onDownloadAll,
+  onDelete,
+  onDeleteAll,
+  onPush
 }) => {
   const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement>(null);
@@ -203,7 +210,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                 </span>
               </div>
               <div className="mt-8">
-                <p className="text-[12px] font-black text-slate-900 dark:text-slate-100 uppercase tracking-[0.1em] leading-none mb-1">
+                <p className="text-[11px] font-extrabold text-slate-900 dark:text-slate-100 uppercase tracking-[0.05em] leading-none mb-1">
                   {card.label}
                 </p>
                 <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight opacity-80">
@@ -217,7 +224,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       {/* Table Container */}
-      <div className="bg-transparent border border-slate-200 dark:border-slate-800 rounded-[32px] shadow-sm flex flex-col overflow-hidden min-h-[500px] transition-colors">
+      <div className="bg-white dark:bg-transparent border border-slate-300 dark:border-slate-800 rounded-[32px] shadow-sm flex flex-col overflow-hidden min-h-[500px] transition-colors">
 
         {/* Table Header Section */}
         <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-6 bg-slate-50/50 dark:bg-slate-950/20">
@@ -268,7 +275,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                         className={`w-full flex items-center justify-between px-5 py-3 text-sm font-bold transition-all text-left group
                             ${filterStatus === opt
                             ? 'bg-indigo-600 text-white'
-                            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 hover:text-white dark:hover:text-white'
+                            : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white'
                           }`}
                       >
                         <span>{opt}</span>
@@ -280,6 +287,13 @@ const Dashboard: React.FC<DashboardProps> = ({
               )}
             </div>
 
+            <button
+              onClick={onDeleteAll}
+              className="p-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-all shadow-sm active:scale-95"
+              title="Delete All Files"
+            >
+              <Trash2 className="w-5 h-5" />
+            </button>
             <button
               onClick={onDownloadAll}
               className="p-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all shadow-sm active:scale-95"
@@ -293,7 +307,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         {/* Table Body */}
         <div className="flex-1 overflow-auto scrollbar-hide">
           <table className="w-full text-sm text-left border-collapse">
-            <thead className="text-[11px] text-slate-400 dark:text-slate-500 font-black uppercase tracking-widest bg-slate-50/50 dark:bg-slate-950/50 border-b border-slate-100 dark:border-slate-800 sticky top-0 z-10">
+            <thead className="text-[10px] text-slate-500 dark:text-slate-600 font-extrabold uppercase tracking-widest bg-slate-50 dark:bg-slate-950/50 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10">
               <tr>
                 <th className="px-8 py-5">Origin / File</th>
                 <th className="px-8 py-5 text-center">Preview</th>
@@ -362,10 +376,10 @@ const Dashboard: React.FC<DashboardProps> = ({
                         {file.status.toUpperCase()}
                       </span>
                     </td>
-                    <td className="px-8 py-6 text-center text-4xl font-black text-slate-300 dark:text-slate-600 font-mono tracking-tighter">
+                    <td className="px-8 py-6 text-center text-lg font-bold text-slate-600 dark:text-slate-600 font-mono tracking-tight">
                       {file.correctEntries.toString().padStart(2, '0')}
                     </td>
-                    <td className="px-8 py-6 text-center text-4xl font-black text-slate-300 dark:text-slate-600 font-mono tracking-tighter">
+                    <td className="px-8 py-6 text-center text-lg font-bold text-slate-600 dark:text-slate-600 font-mono tracking-tight">
                       {calculateFileIssues(file).toString().padStart(2, '0')}
                     </td>
                     <td className="px-8 py-6 text-slate-500 dark:text-slate-500 font-bold text-xs truncate max-w-[150px]">
@@ -377,7 +391,23 @@ const Dashboard: React.FC<DashboardProps> = ({
                         {file.timeTaken || 'n/a'}
                       </div>
                     </td>
-                    <td className="px-8 py-6 text-right">
+                    <td className="px-8 py-6 text-right flex justify-end gap-2">
+                      <button
+                        onClick={() => onDelete(file.id)}
+                        className="p-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-all active:scale-95 shadow-sm"
+                        title="Delete File"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                      {file.status === 'Ready' && file.sourceType === 'OCR_INVOICE' && (
+                        <button
+                          onClick={() => onPush(file)}
+                          className="p-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-emerald-600 dark:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:scale-105 transition-all active:scale-95 shadow-sm"
+                          title="Push to Tally"
+                        >
+                          <Send className="w-5 h-5" />
+                        </button>
+                      )}
                       <button
                         onClick={() => onDownload(file)}
                         className="p-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all active:scale-95 shadow-sm"

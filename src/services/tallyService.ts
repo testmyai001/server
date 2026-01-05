@@ -143,6 +143,92 @@ export const analyzeLedgerRequirements = (vouchers: ExcelVoucher[], existingLedg
   return missing.sort();
 };
 
+export const getInvoiceLedgerRequirements = (invoice: InvoiceData, existingLedgers: Set<string>): string[] => {
+    const missing: string[] = [];
+    
+    // 1. Party Ledger
+    const voucherType = invoice.voucherType || 'Purchase';
+    const isSales = voucherType === 'Sales';
+    const rawPartyName = isSales ? invoice.buyerName : invoice.supplierName;
+    const partyName = cleanName(rawPartyName || "Cash Party");
+    
+    if (!existingLedgers.has(partyName)) {
+        missing.push(partyName);
+    }
+
+    // 2. Tax Ledgers
+    const uniqueRates = new Set<number>();
+    invoice.lineItems.forEach(item => uniqueRates.add(Number(item.gstRate) || 0));
+
+    uniqueRates.forEach(rate => {
+        // Sales/Purchase Ledger
+        // Note: generateTallyXml uses logic: "Sale 18%" or "Purchase 18%"
+        // We must match that exact logic or pass mappings.
+        // Assuming default logic for simplicity of "Missing Check"
+        // If mappings exist, `generateTallyXml` uses them.
+        // BUT here we don't have mappings passed in easily?
+        // `App.tsx` doesn't pass mappings to `generateTallyXml`?
+        // Let's check `generateTallyXml`.
+        // It consumes `invoice.lineItems[].ledgerName` which is mapped in `InvoiceEditor`.
+        // So we should verify THOSE names.
+    });
+
+    // Actually, `InvoiceEditor` maps ledgers and puts them in `lineItems`.
+    // So we just need to check `item.ledgerName`.
+    
+    invoice.lineItems.forEach(item => {
+        if (item.ledgerName && !existingLedgers.has(item.ledgerName)) {
+            if (!missing.includes(item.ledgerName)) missing.push(item.ledgerName);
+        }
+    });
+
+    // 3. Tax Duties (IGST, CGST, SGST)
+    // `generateTallyXml` logic is complex for names (lines 735+).
+    // It blindly generates "Output IGST 18%" etc.
+    // We need to replicate that naming to check existence.
+    
+    uniqueRates.forEach(rate => {
+        if (rate > 0) {
+            const igstName = `${isSales ? 'Output' : 'Input'} IGST ${formatRate(rate)}%`;
+            if (!existingLedgers.has(igstName) && !missing.includes(igstName)) missing.push(igstName);
+
+            const half = rate / 2;
+            const cgstName = `${isSales ? 'Output' : 'Input'} CGST ${formatRate(half)}%`;
+            const sgstName = `${isSales ? 'Output' : 'Input'} SGST ${formatRate(half)}%`;
+            
+            if (!existingLedgers.has(cgstName) && !missing.includes(cgstName)) missing.push(cgstName);
+            if (!existingLedgers.has(sgstName) && !missing.includes(sgstName)) missing.push(sgstName);
+        }
+    });
+
+    return missing.sort();
+};
+
+// --- STRICT LEDGER MATCHING HELPER ---
+export const findLedgerByTypeAndPercent = (
+  tallyLedgers: string[],
+  voucherType: 'Purchase' | 'Sales',
+  gstPercent: number
+): string | null => {
+  const typeKey = voucherType.toLowerCase(); // "purchase" or "sales"
+  const rateKey = gstPercent.toString(); // e.g. "18"
+
+  for (const ledger of tallyLedgers) {
+    const name = ledger.toLowerCase();
+    
+    // 1. Must contain the type (purchase/sales)
+    if (!name.includes(typeKey)) continue;
+
+    // 2. Must contain the rate (e.g. "18")
+    // We check for boundary conditions to avoid matching "18" in "118" if possible, 
+    // but simple containment is usually enough for standard names like "Purchase 18%" or "Purchase @18%"
+    if (name.includes(rateKey)) {
+      return ledger; // Found a candidate
+    }
+  }
+  return null;
+};
+
 // --- CONNECTION CHECK ---
 export const checkTallyConnection = async (): Promise<{ online: boolean; info: string; mode: 'full' | 'blind' | 'none'; activeCompany?: string }> => {
   try {
@@ -169,65 +255,45 @@ export const checkTallyConnection = async (): Promise<{ online: boolean; info: s
 };
 
 // --- BANK XML GENERATION ---
-export const generateBankStatementXml = (data: BankStatementData, existingLedgers: Set<string> = new Set()): string => {
-  const svCompany = '##SVCurrentCompany';
+export const generateBankStatementXml = (
+  data: BankStatementData, 
+  bankLedgerName: string,
+  targetCompany: string, 
+  ledgerMappings: Record<string, string> = {}
+): string => {
+  const svCompany = targetCompany ? esc(targetCompany) : '##SVCurrentCompany';
+  const cleanBankName = esc(bankLedgerName);
 
-  // Format bank name: remove Ltd./Limited and add only last 4 digits of account number
-  let cleanBankName = data.bankName
-    .replace(/\s*Ltd\.?\s*$/i, '')
-    .replace(/\s*Limited\s*$/i, '')
-    .trim();
-
-  // Add last 4 digits of account number if available
-  if (data.accountNumber) {
-    const last4 = data.accountNumber.replace(/\D/g, '').slice(-4);
-    if (last4) {
-      cleanBankName = `${cleanBankName} - ${last4}`;
-    }
-  }
-
-  const bankLedger = esc(cleanBankName);
-
-  let mastersXml = '';
-
-  if (!existingLedgers.has(cleanBankName)) {
-    mastersXml += `
+  // We only generate a Master for the Bank Ledger itself to ensure it exists/is valid.
+  // We use "Alter" to avoid "Duplicate" errors if it exists. 
+  // We assume Parent is "Bank Accounts".
+  let mastersXml = `
     <TALLYMESSAGE xmlns:UDF="TallyUDF">
-      <LEDGER NAME="${bankLedger}" ACTION="Create">
-        <NAME.LIST><NAME>${bankLedger}</NAME></NAME.LIST>
+      <LEDGER NAME="${cleanBankName}" ACTION="Alter">
+        <NAME.LIST><NAME>${cleanBankName}</NAME></NAME.LIST>
         <PARENT>Bank Accounts</PARENT>
         <ISBILLWISEON>No</ISBILLWISEON>
         <ISGSTAPPLICABLE>No</ISGSTAPPLICABLE>
       </LEDGER>
     </TALLYMESSAGE>`;
-  }
 
-  const uniqueContras = new Set<string>();
-  data.transactions.forEach(t => {
-    if (t.contraLedger) uniqueContras.add(t.contraLedger);
-  });
-
-  uniqueContras.forEach(ledgerName => {
-    if (ledgerName !== cleanBankName && !existingLedgers.has(ledgerName)) {
-      mastersXml += `
-    <TALLYMESSAGE xmlns:UDF="TallyUDF">
-      <LEDGER NAME="${esc(ledgerName)}" ACTION="Create">
-        <NAME.LIST><NAME>${esc(ledgerName)}</NAME></NAME.LIST>
-        <PARENT>Suspense A/c</PARENT>
-        <ISGSTAPPLICABLE>No</ISGSTAPPLICABLE>
-      </LEDGER>
-    </TALLYMESSAGE>`;
-    }
-  });
+  // Note: We do NOT generate Ledger Masters for the Contra/Party ledgers here.
+  // Since we are using "Strict Mapping", we assume the mapped target ledgers (e.g. "Office Expenses")
+  // already exist in Tally. Generating "Create" or "Alter" for them without knowing their 
+  // correct Parent Group (Expense, Liability, Asset?) is dangerous/incorrect.
 
   let vouchersXml = '';
 
   data.transactions.forEach((txn) => {
     const dateXml = formatDateForXml(txn.date);
     const amount = txn.voucherType === 'Payment' ? txn.withdrawal : txn.deposit;
-    const contraLedger = esc(txn.contraLedger);
+    const originalContra = txn.contraLedger;
+    const mappedContra = ledgerMappings[originalContra] || originalContra;
+    
+    // Fallback: If still unknown/empty, use Suspense but valid XML requires something.
+    const finalContra = mappedContra || 'Suspense A/c';
+    
     const narration = esc(txn.description);
-
     const isPayment = txn.voucherType === 'Payment';
 
     const bankDeemedPos = isPayment ? 'No' : 'Yes';
@@ -249,13 +315,13 @@ export const generateBankStatementXml = (data: BankStatementData, existingLedger
         <PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>
         
         <ALLLEDGERENTRIES.LIST>
-          <LEDGERNAME>${bankLedger}</LEDGERNAME>
+          <LEDGERNAME>${cleanBankName}</LEDGERNAME>
           <ISDEEMEDPOSITIVE>${bankDeemedPos}</ISDEEMEDPOSITIVE>
           <AMOUNT>${bankAmountVal}</AMOUNT>
         </ALLLEDGERENTRIES.LIST>
 
         <ALLLEDGERENTRIES.LIST>
-          <LEDGERNAME>${contraLedger}</LEDGERNAME>
+          <LEDGERNAME>${esc(finalContra)}</LEDGERNAME>
           <ISDEEMEDPOSITIVE>${partyDeemedPos}</ISDEEMEDPOSITIVE>
           <AMOUNT>${partyAmountVal}</AMOUNT>
         </ALLLEDGERENTRIES.LIST>
@@ -294,7 +360,7 @@ export const generateBankStatementXml = (data: BankStatementData, existingLedger
 };
 
 // --- BULK EXCEL XML GENERATION ---
-export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: Set<string>, targetCompany: string): string => {
+export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: Set<string>, targetCompany: string, ledgerMappings: Record<string, string> = {}): string => {
   let mastersXml = '';
   let vouchersXml = '';
   const svCompany = targetCompany ? esc(targetCompany) : '##SVCurrentCompany';
@@ -337,7 +403,11 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
     const isInterState = (gstin.length >= 2 && destState !== homeState);
 
     voucher.items.forEach(item => {
-      const ledgerName = item.ledgerName || `${voucher.voucherType === 'Sales' ? 'Sale' : 'Purchase'} ${item.taxRate}%`;
+      // Use mapped ledger if available
+      const rateStr = item.taxRate ? item.taxRate.toString() : '0';
+      const mappedLedger = ledgerMappings[rateStr];
+      const ledgerName = item.ledgerName || mappedLedger || `${voucher.voucherType === 'Sales' ? 'Sale' : 'Purchase'} ${item.taxRate}%`;
+
       if (!createdMasters.has(ledgerName)) {
         mastersXml += `
                 <TALLYMESSAGE xmlns:UDF="TallyUDF">
@@ -486,7 +556,9 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
       const cessAmt = round(item.cess || 0);
       totalVoucherAmount += (taxable + totalTaxAmt + cessAmt);
 
-      const ledgerName = item.ledgerName || `${isSales ? 'Sale' : 'Purchase'} ${rate}%`;
+      const rateStr = rate.toString();
+      const mappedLedger = ledgerMappings[rateStr];
+      const ledgerName = item.ledgerName || mappedLedger || `${isSales ? 'Sale' : 'Purchase'} ${rate}%`;
 
       const taxableStr = isSales ? `${taxable.toFixed(2)}` : `-${taxable.toFixed(2)}`;
 

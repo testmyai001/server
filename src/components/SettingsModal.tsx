@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Moon, Sun, Shield, Trash2, Monitor, RefreshCw, CheckCircle2, AlertTriangle, Server, Network, FileText, ChevronDown, ChevronUp, Search, Clock } from 'lucide-react';
-import { getInvoiceRegistry, InvoiceRegistryEntry } from '../services/dbService';
+import { getInvoiceRegistry, InvoiceRegistryEntry, clearInvoiceRegistry } from '../services/dbService';
 import { removePin } from '../services/authService';
 import { TALLY_API_URL, BACKEND_API_URL } from '../constants';
 
@@ -13,6 +13,7 @@ interface SettingsModalProps {
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggleDarkMode }) => {
     const [confirmReset, setConfirmReset] = useState(false);
+    const [confirmDeleteInvoices, setConfirmDeleteInvoices] = useState(false);
 
     // URL States
     const [tallyUrl, setTallyUrl] = useState('');
@@ -61,6 +62,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
             window.location.reload();
         } else {
             setConfirmReset(true);
+        }
+    };
+
+    const handleDeleteInvoices = async () => {
+        if (confirmDeleteInvoices) {
+            await clearInvoiceRegistry();
+            setInvoiceHistory([]);
+            setConfirmDeleteInvoices(false);
+        } else {
+            setConfirmDeleteInvoices(true);
         }
     };
 
@@ -230,6 +241,30 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                                     </div>
                                 </div>
                             )}
+                        </div>
+
+                        <div className="mb-4">
+                            <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-700">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2 rounded-lg bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400">
+                                        <FileText className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <p className="font-semibold text-slate-700 dark:text-slate-200 text-sm">Invoice Registry</p>
+                                        <p className="text-xs text-slate-500 dark:text-slate-400">Clear processed invoice history</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={handleDeleteInvoices}
+                                    className={`px-3 py-1.5 text-xs font-bold transition-all rounded-lg flex items-center gap-1 ${confirmDeleteInvoices
+                                            ? 'bg-red-600 text-white'
+                                            : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700'
+                                        }`}
+                                >
+                                    <RefreshCw className="w-3 h-3" />
+                                    {confirmDeleteInvoices ? 'Confirm' : 'Clear History'}
+                                </button>
+                            </div>
                         </div>
 
                         <div className="p-4 bg-red-50 dark:bg-red-900/10 rounded-xl border border-red-100 dark:border-red-900/30">

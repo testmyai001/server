@@ -6,13 +6,14 @@ import base64
 from typing import List, Tuple
 import pdfplumber
 
-def split_pdf_to_images(pdf_bytes: bytes, max_size_mb: float = 3.5) -> List[Tuple[str, int]]:
+def split_pdf_to_images(pdf_bytes: bytes, max_size_mb: float = 3.5, password: str = None) -> List[Tuple[str, int]]:
     """
     Split PDF into individual page images.
     
     Args:
         pdf_bytes: PDF file as bytes
         max_size_mb: Maximum size per image in MB (default 3.5MB to stay under 4MB base64 limit)
+        password: Optional password for the PDF file
     
     Returns:
         List of tuples: (base64_image_string, page_number)
@@ -23,7 +24,7 @@ def split_pdf_to_images(pdf_bytes: bytes, max_size_mb: float = 3.5) -> List[Tupl
         # Open PDF with pdfplumber
         pdf_file = io.BytesIO(pdf_bytes)
         
-        with pdfplumber.open(pdf_file) as pdf:
+        with pdfplumber.open(pdf_file, password=password) as pdf:
             total_pages = len(pdf.pages)
             
             for page_num, page in enumerate(pdf.pages, start=1):
@@ -57,19 +58,20 @@ def split_pdf_to_images(pdf_bytes: bytes, max_size_mb: float = 3.5) -> List[Tupl
         raise Exception(f"Error splitting PDF: {str(e)}")
 
 
-def get_pdf_page_count(pdf_bytes: bytes) -> int:
+def get_pdf_page_count(pdf_bytes: bytes, password: str = None) -> int:
     """
     Get the number of pages in a PDF.
     
     Args:
         pdf_bytes: PDF file as bytes
+        password: Optional password for the PDF file
     
     Returns:
         Number of pages
     """
     try:
         pdf_file = io.BytesIO(pdf_bytes)
-        with pdfplumber.open(pdf_file) as pdf:
+        with pdfplumber.open(pdf_file, password=password) as pdf:
             return len(pdf.pages)
     except Exception as e:
         raise Exception(f"Error reading PDF: {str(e)}")

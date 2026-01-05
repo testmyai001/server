@@ -227,14 +227,14 @@ const Navbar: React.FC<NavbarProps> = ({
           <div className="flex items-center gap-4">
             <button
               onClick={() => onChangeView(AppView.LOGS)}
-              className={`flex items-center gap-2 text-xs font-black uppercase tracking-widest transition-colors ${currentView === AppView.LOGS ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-200'}`}
+              className={`flex items-center gap-2 text-xs font-black uppercase tracking-widest transition-colors ${currentView === AppView.LOGS ? 'text-indigo-400' : 'text-slate-600 hover:text-slate-200'}`}
             >
               <Activity className="w-4 h-4" />
               Logs
             </button>
             <button
               onClick={() => setIsCalcOpen(!isCalcOpen)}
-              className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-500 hover:text-slate-200 transition-colors"
+              className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-600 hover:text-slate-200 transition-colors"
             >
               <Calculator className="w-4 h-4" />
               Tax Calc

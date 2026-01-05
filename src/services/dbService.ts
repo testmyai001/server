@@ -116,7 +116,7 @@ class AutoTallyDB {
     const db = await this.init();
     const tx = db.transaction('invoice_numbers', 'readonly');
     const store = tx.objectStore('invoice_numbers');
-    
+
     return new Promise((resolve, reject) => {
       const request = store.get(invoiceNumber);
       request.onsuccess = () => {
@@ -124,6 +124,11 @@ class AutoTallyDB {
       };
       request.onerror = () => reject(request.error);
     });
+  }
+  async clearInvoiceEntries() {
+    const db = await this.init();
+    const tx = db.transaction('invoice_numbers', 'readwrite');
+    tx.objectStore('invoice_numbers').clear();
   }
 }
 
@@ -178,6 +183,11 @@ export const getInvoiceRegistry = async () => {
   return await dbInstance.getAllInvoiceEntries();
 };
 
+
 export const checkInvoiceExists = async (invoiceNumber: string) => {
   return await dbInstance.checkInvoiceExists(invoiceNumber);
+};
+
+export const clearInvoiceRegistry = async () => {
+  await dbInstance.clearInvoiceEntries();
 };

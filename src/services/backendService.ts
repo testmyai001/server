@@ -141,15 +141,20 @@ export const syncLedgersFromBackend = async (
 // Process document with AI
 export const processDocumentWithAI = async (
   file: File,
-  apiKey: string
+  apiKey: string,
+  password?: string
 ): Promise<{
   success: boolean;
   invoice?: InvoiceData;
   message: string;
+  status?: number;
 }> => {
   try {
     const formData = new FormData();
     formData.append('file', file);
+    if (password) {
+      formData.append('password', password);
+    }
 
     const headers: HeadersInit = {
       'Authorization': `Bearer ${apiKey}`,
@@ -167,6 +172,7 @@ export const processDocumentWithAI = async (
       return {
         success: false,
         message: data.message || 'Failed to process document',
+        status: response.status,
       };
     }
 
@@ -239,7 +245,8 @@ export const processBulkDocumentsWithAI = async (
 // Process bank statement PDF via backend
 export const processBankStatementPDF = async (
   file: File,
-  apiKey: string
+  apiKey: string,
+  password?: string
 ): Promise<{
   success: boolean;
   documentType: string;
@@ -256,6 +263,9 @@ export const processBankStatementPDF = async (
 
     const formData = new FormData();
     formData.append('file', file);
+    if (password) {
+      formData.append('password', password);
+    }
 
     const response = await fetch(`${BACKEND_API_URL}/ai/process-bank-statement-pdf`, {
       method: 'POST',

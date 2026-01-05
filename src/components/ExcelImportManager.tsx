@@ -1,8 +1,11 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { FileSpreadsheet, ArrowRight, ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Merge, Database, ListPlus, RefreshCw, Play, Building2, UploadCloud, ChevronDown, Download } from 'lucide-react';
 import { read, utils, writeFile } from 'xlsx';
 import { ExcelVoucher, ProcessedFile } from '../types';
-import { generateBulkExcelXml, pushToTally, fetchExistingLedgers, analyzeLedgerRequirements, fetchOpenCompanies, checkTallyConnection, tallyRound } from '../services/tallyService';
+import { generateBulkExcelXml, pushToTally, fetchExistingLedgers, analyzeLedgerRequirements, fetchOpenCompanies, checkTallyConnection, tallyRound, findLedgerByTypeAndPercent } from '../services/tallyService';
+import LedgerMappingModal from './LedgerMappingModal';
+import BulkLedgerCreationModal from './BulkLedgerCreationModal';
 import { saveInvoiceRegistry, checkInvoiceExists, getInvoiceRegistry } from '../services/dbService';
 import { v4 as uuidv4 } from 'uuid';
 import TallyDisconnectedModal from './TallyDisconnectedModal';
@@ -75,6 +78,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
     const [isProcessing, setIsProcessing] = useState(false);
     const [missingLedgers, setMissingLedgers] = useState<string[]>([]);
     const [isCheckingLedgers, setIsCheckingLedgers] = useState(false);
+    const [isStartingPush, setIsStartingPush] = useState(false); // Validating before push
     const [connectionError, setConnectionError] = useState<boolean>(false);
     const [companies, setCompanies] = useState<string[]>([]);
     const [selectedCompany, setSelectedCompany] = useState<string>('');
@@ -83,6 +87,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
     const [allColumns, setAllColumns] = useState<string[]>([]);
     const [showNotification, setShowNotification] = useState(false);
     const [isDragOver, setIsDragOver] = useState(false);
+    const isCancelledRef = useRef(false);
 
     // Import Summary State
     const [summaryModalOpen, setSummaryModalOpen] = useState(false);
@@ -109,6 +114,29 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
         address: '',      // Added for Address mapping
         placeOfSupply: '' // Added for POS mapping
     });
+
+    // Ledger Mapping State
+    const [showMappingModal, setShowMappingModal] = useState(false);
+    const [missingRates, setMissingRates] = useState<number[]>([]);
+    const [ledgerMappings, setLedgerMappings] = useState<Record<string, string>>({}); // rate string -> ledger name
+
+    // Bulk Ledger Creation State
+    const [showLedgerCreationModal, setShowLedgerCreationModal] = useState(false);
+    const [proposedLedgers, setProposedLedgers] = useState<string[]>([]);
+
+    const [pushReadyData, setPushReadyData] = useState<{
+        vouchers: ExcelVoucher[],
+        ledgers: string[],
+        skippedLedgers?: string[], // Added to pass skipped ledgers through
+    } | null>(null);
+
+    // Load mappings from local storage
+    useEffect(() => {
+        try {
+            const saved = localStorage.getItem('autotally_ledger_mappings');
+            if (saved) setLedgerMappings(JSON.parse(saved));
+        } catch (e) { }
+    }, []);
 
     const downloadTemplate = () => {
         const headers = [
@@ -735,7 +763,190 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
 
     const [showDisconnectModal, setShowDisconnectModal] = useState(false);
 
-    const startBulkPush = async () => {
+    const handleCancelProcessing = () => {
+        isCancelledRef.current = true;
+        setIsProcessing(false);
+    };
+
+    // --- VERIFICATION HELPER ---
+    const verifyLedgers = async (company: string = selectedCompany) => {
+        if (!company) return [];
+
+        try {
+            setIsCheckingLedgers(true);
+            const fetched = await fetchExistingLedgers(company);
+            const tallyLedgers = Array.from(fetched);
+            const calculatedMissing = analyzeLedgerRequirements(mappedData, fetched);
+            setMissingLedgers(calculatedMissing);
+            return tallyLedgers;
+        } catch (e) {
+            console.error(e);
+            return [];
+        } finally {
+            setIsCheckingLedgers(false);
+        }
+    };
+
+    // Auto-verify on Step 3 Entry
+    useEffect(() => {
+        if (step === 3 && selectedCompany) {
+            verifyLedgers(selectedCompany);
+        }
+    }, [step, selectedCompany]);
+
+    // --- BULK PUSH HANDLER (Intercepted) ---
+    const handleStartBulkPushInit = async () => {
+        if (!selectedCompany) {
+            alert('Please select a Target Company first.');
+            return;
+        }
+
+        setIsStartingPush(true); // "Pushing..." state
+
+        try {
+            // 1. Identify Unique GST Rates
+            const rates = new Set<string>();
+            mappedData.forEach(voucher => {
+                voucher.items.forEach(item => {
+                    const r = item.taxRate ? item.taxRate.toString() : '0';
+                    rates.add(r);
+                });
+            });
+
+            // 2. Re-Verify Ledgers (Fast check)
+            const fetched = await fetchExistingLedgers(selectedCompany);
+            const tallyLedgers = Array.from(fetched);
+            const calculatedMissing = analyzeLedgerRequirements(mappedData, fetched);
+            setMissingLedgers(calculatedMissing);
+
+            if (calculatedMissing.length > 0) {
+                setProposedLedgers(calculatedMissing);
+                setIsStartingPush(false);
+                setShowLedgerCreationModal(true);
+                return;
+            }
+
+            // 3. Find Missing Mappings
+            const missing: number[] = [];
+            const voucherType = mappedData[0]?.voucherType || 'Purchase';
+
+            rates.forEach(rateStr => {
+                if (ledgerMappings[rateStr]) return;
+
+                const rate = Number(rateStr);
+                // Try to auto-match
+                const match = findLedgerByTypeAndPercent(tallyLedgers, voucherType as any, rate);
+                if (!match) {
+                    missing.push(rate);
+                } else {
+                    ledgerMappings[rateStr] = match;
+                }
+            });
+
+            if (missing.length > 0) {
+                setMissingRates(missing);
+                setPushReadyData({ vouchers: mappedData, ledgers: tallyLedgers });
+                setIsStartingPush(false);
+                setShowMappingModal(true);
+            } else {
+                // Proceed
+                setPushReadyData({ vouchers: mappedData, ledgers: tallyLedgers });
+                // Note: startBulkPush will handle flipping the state to isProcessing
+                // We keep isStartingPush(true) until startBulkPush calls setIsStartingPush(false)
+                startBulkPush(mappedData, tallyLedgers, ledgerMappings);
+            }
+
+        } catch (e) {
+            console.error('Error in bulk push init:', e);
+            setIsStartingPush(false);
+        }
+    };
+
+    const handleConfirmMapping = (newMappings: Record<string, string>, createdLedgers: string[]) => {
+        const combined = { ...ledgerMappings, ...newMappings };
+        setLedgerMappings(combined);
+        localStorage.setItem('autotally_ledger_mappings', JSON.stringify(combined));
+
+        setShowMappingModal(false);
+        if (pushReadyData) {
+            // merge skippedLedgers from previous step + createdLedgers from this step
+            const allSkipped = [
+                ...(pushReadyData.skippedLedgers || []),
+                ...createdLedgers
+            ];
+            startBulkPush(pushReadyData.vouchers, pushReadyData.ledgers, combined, allSkipped);
+        }
+    };
+
+    const handleConfirmBulkLedgerCreation = (skippedLedgers: string[]) => {
+        setShowLedgerCreationModal(false);
+        // Resume push
+        // We need data... where is logic? it was inside handleStartBulkPushInit 
+        // We can just recall handleStartBulkPushInit? No, that would re-trigger checks.
+        // We should replicate the "Proceed" part of handleStartBulkPushInit or extract it.
+        // Easier: Just call startBulkPush? We need vouchers/ledgers/mappings.
+        // We haven't done mappings yet if we stopped at ledger check.
+        // So we need to CONTINUE to Step 3 (Mappings).
+
+        // Let's create a continuation function `continueBulkPushAfterLedgers(skipped)`.
+        continueAfterLedgerCheck(skippedLedgers);
+    };
+
+    const continueAfterLedgerCheck = async (skippedLedgers: string[]) => {
+        // Re-get data
+        const vouchers = mappedData;
+        // We need `tallyLedgers` for mapping match.
+        const fetched = await fetchExistingLedgers(selectedCompany);
+        const tallyLedgers = Array.from(fetched);
+
+        // 3. Find Missing Mappings
+        // ... (Logic from handleStartBulkPushInit)
+        const rates = new Set<string>();
+        vouchers.forEach(voucher => {
+            voucher.items.forEach(item => {
+                const r = item.taxRate ? item.taxRate.toString() : '0';
+                rates.add(r);
+            });
+        });
+
+        const missing: number[] = [];
+        const voucherType = vouchers[0]?.voucherType || 'Purchase';
+
+        rates.forEach(rateStr => {
+            if (ledgerMappings[rateStr]) return;
+            // Check against Tally OR Proposed (since we will create them)
+            // But mapping is for TAX LEDGERS usually?
+            // analyzeLedgerRequirements covers Tax Ledgers too.
+            // If we confimred creation, we assume they will exist.
+            // But mapping relies on `findLedgerByTypeAndPercent` which searches EXISTING names.
+            // If we confirm creation, the names might match standard Tally names?
+            // If so, `findLedgerByTypeAndPercent` might succeed if we add proposed to the search list?
+
+            // Simpler: Just run mapping check. If fail -> Map.
+            const rate = Number(rateStr);
+            const match = findLedgerByTypeAndPercent(tallyLedgers, voucherType as any, rate);
+            if (!match) {
+                missing.push(rate);
+            } else {
+                ledgerMappings[rateStr] = match;
+            }
+        });
+
+        if (missing.length > 0) {
+            setMissingRates(missing);
+            // We need to store `skippedLedgers` to pass it later!
+            // `pushReadyData` only stores vouchers/ledgers.
+            // Update `pushReadyData` type or add another state field?
+            // Or just capture it in closure of `handleConfirmMapping`? No.
+            // Let's add `skippedLedgers` to `pushReadyData`.
+            setPushReadyData({ vouchers, ledgers: tallyLedgers, skippedLedgers });
+            setShowMappingModal(true);
+        } else {
+            startBulkPush(vouchers, tallyLedgers, ledgerMappings, skippedLedgers);
+        }
+    };
+
+    const startBulkPush = async (vouchers: ExcelVoucher[], existingLedgersList: string[], mappings: Record<string, string>, skippedLedgers: string[] = []) => {
         const status = await checkTallyConnection();
         if (!status.online) {
             setShowDisconnectModal(true);
@@ -743,7 +954,12 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
         }
 
         setIsProcessing(true);
+        setIsStartingPush(false); // Reset this state so it doesn't get stuck
+        isCancelledRef.current = false;
         if (onUpdateFile && fileId) onUpdateFile(fileId, { status: 'Processing' });
+
+        console.log("DEBUG: Starting Bulk Push", { total: vouchers.length, skippedLedgers });
+
 
         try {
             // 1. Filter Duplicates
@@ -753,7 +969,9 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
             const newVouchers: ExcelVoucher[] = [];
             let skippedCount = 0;
 
-            for (const v of mappedData) {
+
+
+            for (const v of vouchers) {
                 if (v.invoiceNo && existingNumbers.has(v.invoiceNo.toLowerCase())) {
                     skippedCount++;
                 } else {
@@ -778,15 +996,28 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
 
             const total = newVouchers.length;
             const totalBatches = Math.ceil(total / BATCH_SIZE);
-            let createdMasters = new Set<string>();
+            let createdMasters = new Set<string>(skippedLedgers); // Pre-fill to skip creation
             let errorCount = 0;
             let successCount = 0;
 
             for (let i = 0; i < totalBatches; i++) {
                 const end = (i + 1) * BATCH_SIZE;
                 const batch = newVouchers.slice(i * BATCH_SIZE, end);
-                const xml = generateBulkExcelXml(batch, createdMasters, selectedCompany);
+
+                if (isCancelledRef.current) break;
+
+                if (isCancelledRef.current) break;
+
+                if (onPushLog) onPushLog('Processing', `Processed Batch ${i + 1}/${totalBatches}`);
+
+                // Add small visual delay to let the UI breathe and show animation
+                await new Promise(r => setTimeout(r, 50));
+
+                const xml = generateBulkExcelXml(batch, createdMasters, selectedCompany, mappings);
+                console.log(`DEBUG: Batch ${i + 1} XML generated. Size: ${xml.length}`);
+                
                 const result = await pushToTally(xml);
+                console.log(`DEBUG: Batch ${i + 1} Result:`, result);
 
                 if (!result.success) {
                     errorCount += batch.length;
@@ -796,6 +1027,11 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     batch.forEach(v => {
                         if (v.invoiceNo) saveInvoiceRegistry(v.invoiceNo, 'EXCEL');
                     });
+                }
+
+                // Add found masters to created set so subsequent batches see them
+                if (result.createdMasters && result.createdMasters.length > 0) {
+                    result.createdMasters.forEach(m => createdMasters.add(m));
                 }
 
                 setProgress({ processed: Math.min(end, total), total, batch: i + 1, errors: errorCount });
@@ -842,7 +1078,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 onClick={() => fileInputRef.current?.click()}
             >
                 <div
-                    className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex justify-between items-center shrink-0"
+                    className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-300 dark:border-slate-700 shadow-sm flex justify-between items-center shrink-0"
                     onClick={(e) => e.stopPropagation()}
                 >
                     <div className="flex items-center gap-3">
@@ -851,7 +1087,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                         </div>
                         <div>
                             <h2 className="text-lg font-bold text-slate-900 dark:text-white uppercase tracking-tight">Excel Bulk Import</h2>
-                            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Reconcile large volume spreadsheet data efficiently</p>
+                            <p className="text-xs text-slate-600 dark:text-slate-400 font-medium">Reconcile large volume spreadsheet data efficiently</p>
                         </div>
                     </div>
 
@@ -880,7 +1116,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     </div>
                     <div className="text-center space-y-3 max-w-lg">
                         <h3 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">Drop Excel Spreadsheet</h3>
-                        <p className="text-slate-500 dark:text-slate-400 font-medium leading-relaxed text-sm">Select a .xlsx or .csv file. We'll help you map the columns to Tally vouchers next.</p>
+                        <p className="text-slate-600 dark:text-slate-400 font-medium leading-relaxed text-sm">Select a .xlsx or .csv file. We'll help you map the columns to Tally vouchers next.</p>
                         <button
                             onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                             className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 rounded-xl font-black text-base shadow-xl shadow-emerald-600/20 transition-all hover:-translate-y-1 active:scale-95 flex items-center gap-2 mx-auto"
@@ -904,7 +1140,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                             </div>
                             <div>
                                 <h4 className="text-[10px] font-black uppercase text-slate-800 dark:text-white tracking-wider">{feat.label}</h4>
-                                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium mt-0.5 leading-relaxed">{feat.desc}</p>
+                                <p className="text-[10px] text-slate-600 dark:text-slate-400 font-medium mt-0.5 leading-relaxed">{feat.desc}</p>
                             </div>
                         </div>
                     ))}
@@ -934,7 +1170,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                                     setFileId(null);
                                     setMappedData([]);
                                 }}
-                                className="p-1.5 -ml-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-lg transition-colors"
+                                className="p-1.5 -ml-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 rounded-lg transition-colors"
                                 title="Back to Upload"
                             >
                                 <ArrowLeft className="w-5 h-5" />
@@ -1009,7 +1245,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     </div>
 
                     <div className="mt-8 flex justify-end gap-3">
-                        <button onClick={() => setStep(1)} className="px-6 py-3 rounded-xl text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold transition-all">Cancel</button>
+                        <button onClick={() => setStep(1)} className="px-6 py-3 rounded-xl text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold transition-all">Cancel</button>
                         <button
                             onClick={processMapping}
                             className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-2 shadow-xl shadow-indigo-600/20 active:scale-95 transition-all outline-none focus:ring-4 focus:ring-indigo-500/20"
@@ -1022,7 +1258,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 <div className="flex-1 bg-white dark:bg-slate-800 rounded-[32px] border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm flex flex-col">
                     <div className="p-6 bg-slate-50/50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-700 flex items-center gap-3">
                         <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
-                        <span className="font-black text-xs text-slate-500 dark:text-slate-400 uppercase tracking-widest">
+                        <span className="font-black text-xs text-slate-600 dark:text-slate-400 uppercase tracking-widest">
                             Preview (First 5 Rows)
                         </span>
                     </div>
@@ -1060,7 +1296,7 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 <div className="flex items-center gap-4">
                     <button
                         onClick={() => setStep(2)}
-                        className="p-2 -ml-2 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-full transition-colors disabled:opacity-50"
+                        className="p-2 -ml-2 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 rounded-full transition-colors disabled:opacity-50"
                         title="Back to Mapping"
                         disabled={isProcessing}
                     >
@@ -1071,14 +1307,18 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                     </div>
                     <div>
                         <h2 className="text-xl font-bold text-slate-900 dark:text-white uppercase">Review & Import</h2>
-                        <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">{mappedData.length} Merged Vouchers Ready</p>
+                        <p className="text-sm text-slate-600 dark:text-slate-400 font-medium">{mappedData.length} Merged Vouchers Ready</p>
                     </div>
                 </div>
 
                 {!isProcessing && progress.processed === 0 && (
-                    <button onClick={startBulkPush} disabled={connectionError} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-2.5 rounded-xl font-black shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-2 active:scale-95">
-                        <Play className="w-5 h-5" />
-                        Push to Tally
+                    <button
+                        onClick={handleStartBulkPushInit}
+                        disabled={connectionError || isCheckingLedgers || isStartingPush}
+                        className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-8 py-2.5 rounded-xl font-black shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-2 active:scale-95"
+                    >
+                        {(isCheckingLedgers || isStartingPush) ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
+                        {isStartingPush ? 'Pushing...' : (isCheckingLedgers ? 'Verifying...' : 'Push to Tally')}
                     </button>
                 )}
             </div>
@@ -1097,21 +1337,59 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                                 </div>
                             </div>
                             <h2 className="text-3xl font-black text-slate-900 dark:text-white mb-3 tracking-tight">Syncing with Tally...</h2>
-                            <p className="text-slate-500 dark:text-slate-400 font-mono font-bold">Progress: {progress.processed} / {progress.total} Entries</p>
+                            <p className="text-slate-600 dark:text-slate-400 font-mono font-bold">Progress: {progress.processed} / {progress.total} Entries</p>
+                            <button
+                                onClick={handleCancelProcessing}
+                                className="mt-8 px-6 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-xl transition-colors shadow-lg shadow-red-600/20 active:scale-95"
+                            >
+                                Cancel Sync
+                            </button>
                         </div>
                     )}
                     {!isProcessing && progress.processed > 0 && (
                         <div className="animate-fade-in">
-                            <div className="w-24 h-24 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 rounded-[32px] flex items-center justify-center mx-auto mb-8 shadow-inner"><CheckCircle2 className="w-12 h-12" /></div>
-                            <h2 className="text-4xl font-black text-slate-900 dark:text-white mb-4 tracking-tight uppercase">Import Successful</h2>
-                            <p className="text-slate-500 dark:text-slate-400 font-medium mb-10 leading-relaxed">Successfully synchronized {progress.total} vouchers with Tally Prime.</p>
+                            {progress.errors === 0 ? (
+                                // Full Success
+                                <>
+                                    <div className="w-24 h-24 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 rounded-[32px] flex items-center justify-center mx-auto mb-8 shadow-inner">
+                                        <CheckCircle2 className="w-12 h-12" />
+                                    </div>
+                                    <h2 className="text-4xl font-black text-slate-900 dark:text-white mb-4 tracking-tight uppercase">Import Successful</h2>
+                                    <p className="text-slate-600 dark:text-slate-400 font-medium mb-10 leading-relaxed">
+                                        Successfully synchronized {progress.total} vouchers with Tally Prime.
+                                    </p>
+                                </>
+                            ) : progress.errors === progress.total ? (
+                                // Full Failure
+                                <>
+                                    <div className="w-24 h-24 bg-red-100 dark:bg-red-900/30 text-red-600 rounded-[32px] flex items-center justify-center mx-auto mb-8 shadow-inner">
+                                        <AlertTriangle className="w-12 h-12" />
+                                    </div>
+                                    <h2 className="text-4xl font-black text-slate-900 dark:text-white mb-4 tracking-tight uppercase">Import Failed</h2>
+                                    <p className="text-slate-600 dark:text-slate-400 font-medium mb-10 leading-relaxed">
+                                        Failed to push all {progress.total} vouchers to Tally Prime. Check logs for details.
+                                    </p>
+                                </>
+                            ) : (
+                                // Partial Success
+                                <>
+                                    <div className="w-24 h-24 bg-orange-100 dark:bg-orange-900/30 text-orange-600 rounded-[32px] flex items-center justify-center mx-auto mb-8 shadow-inner">
+                                        <AlertTriangle className="w-12 h-12" />
+                                    </div>
+                                    <h2 className="text-3xl font-black text-slate-900 dark:text-white mb-4 tracking-tight uppercase">Import Completed with Errors</h2>
+                                    <p className="text-slate-600 dark:text-slate-400 font-medium mb-10 leading-relaxed">
+                                        {progress.total - progress.errors} Successful, {progress.errors} Failed. Check logs for details.
+                                    </p>
+                                </>
+                            )}
+
                             <button onClick={() => setStep(1)} className="bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 dark:hover:bg-slate-600 text-white px-12 py-4 rounded-[20px] font-black shadow-xl active:scale-95 transition-all">
                                 New Bulk Task
                             </button>
                         </div>
                     )}
                     {!isProcessing && progress.processed === 0 && (
-                        <div className="animate-fade-in max-w-md w-full">
+                        <div className="animate-fade-in w-fit min-w-[28rem] max-w-5xl">
                             <div className="text-left bg-slate-50 dark:bg-slate-950 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-inner">
                                 <label className="block text-[11px] font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
                                     <Building2 className="w-4 h-4 text-indigo-500" />
@@ -1132,6 +1410,15 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                                         <RefreshCw className={`w-5 h-5 ${loadingCompanies ? 'animate-spin' : ''}`} />
                                     </button>
                                 </div>
+                                {/* Bulk Ledger Creation Modal */}
+                                <BulkLedgerCreationModal
+                                    isOpen={showLedgerCreationModal}
+                                    onClose={() => { setShowLedgerCreationModal(false); setIsStartingPush(false); }}
+                                    proposedLedgers={proposedLedgers}
+                                    onConfirm={handleConfirmBulkLedgerCreation}
+                                />
+
+                                {/* Existing Validations */}
                                 {companies.length === 0 && (
                                     <p className="text-xs text-red-500 mt-2">⚠️ Cannot connect to Tally. Make sure Tally Prime is running on localhost:9000</p>
                                 )}
@@ -1177,10 +1464,30 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 </div>
             </div>
 
+            {showMappingModal && (
+                <LedgerMappingModal
+                    isOpen={showMappingModal}
+                    title="Map Tax Ledgers"
+                    voucherType={mappedData[0]?.voucherType === 'Sales' ? 'Sales' : 'Purchase'}
+                    itemsToMap={missingRates.map(r => ({ key: r, label: `${r}% GST Items`, type: 'rate' as const }))}
+                    mappings={Object.fromEntries(Object.entries(ledgerMappings).map(([k, v]) => [k, v]))}
+                    tallyLedgers={pushReadyData?.ledgers || []}
+                    onConfirm={(newMap: Record<string, string>, created: string[]) => {
+                        handleConfirmMapping(newMap, created);
+                    }}
+                    onCancel={() => setShowMappingModal(false)}
+                />
+            )}
+
             {showDisconnectModal && (
                 <TallyDisconnectedModal
                     onClose={() => setShowDisconnectModal(false)}
-                    onRetry={() => { setShowDisconnectModal(false); startBulkPush(); }}
+                    onRetry={() => {
+                        setShowDisconnectModal(false);
+                        if (pushReadyData) {
+                            startBulkPush(pushReadyData.vouchers, pushReadyData.ledgers, ledgerMappings);
+                        }
+                    }}
                 />
             )}
 

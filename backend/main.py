@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File, Depends
+from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict, Optional, List
@@ -304,6 +304,7 @@ async def chat(
 @app.post("/ai/process-document")
 async def process_document(
     file: UploadFile = File(...),
+    password: Optional[str] = Form(None),
     authorization: str = Header(None)
 ):
     """Process a single document (invoice image/PDF) and return structured data"""
@@ -317,13 +318,87 @@ async def process_document(
         # Prefer flash for speed
         model = genai.GenerativeModel('gemini-2.5-flash')
 
-        # Read file bytes and convert to base64
+        # Read file bytes
         file_bytes = await file.read()
+        mime_type = file.content_type or "application/octet-stream"
+        
+        # Helper to prepare content for Gemini
+        gemini_content_parts = []
+        
+        # Handle PDF specifically for Password/Extraction
+        if mime_type == "application/pdf" or file.filename.lower().endswith(".pdf"):
+            import io
+            import pdfplumber
+            
+            extracted_text = ""
+            is_encrypted = False
+            
+            try:
+                # Try opening with password
+                with pdfplumber.open(io.BytesIO(file_bytes), password=password) as pdf:
+                    for page in pdf.pages:
+                        text = page.extract_text()
+                        if text:
+                            extracted_text += text + "\n"
+                    
+                    # If we opened it successfully but it has no text, it might be scanned.
+                    # If it WAS encrypted, we are now "in".
+                    
+            except Exception as e:
+                error_str = str(e).lower()
+                if "password" in error_str or "encrypted" in error_str:
+                    print(f"PASSWORD REQUIRED for {file.filename}")
+                    raise HTTPException(status_code=422, detail="Password required")
+                print(f"PDF reading error (ignoring if not password related): {e}")
+
+            # Strategy:
+            # 1. If we have good text, send text (Cheap & Fast)
+            # 2. If valid PDF but no text (Scanned), convert to Images and send Images (Reliable)
+            # 3. If password was provided and worked, we MUST use Text or Images (can't send bytes)
+            # 4. If no password needed and text failed, we COULD send bytes, but Images are safer for consistency.
+            
+            if len(extracted_text.strip()) > 50:
+                print(f"Processing PDF as TEXT: {len(extracted_text)} chars")
+                gemini_content_parts.append(extracted_text)
+            else:
+                print("Processing PDF as IMAGES (Scanned or Low Text)")
+                # Convert to images using pdf_processor utils or local logic
+                from pdf_processor import split_pdf_to_images
+                try:
+                    # split_pdf_to_images now accepts password
+                    images = split_pdf_to_images(file_bytes, password=password)
+                    for img_b64, _ in images:
+                         gemini_content_parts.append({
+                             "mime_type": "image/png",
+                             "data": img_b64
+                         })
+                except Exception as img_err:
+                     print(f"Image conversion failed: {img_err}")
+                     # Fallback to sending raw bytes if not encrypted? 
+                     # If it was encrypted, we are stuck.
+                     if password:
+                         raise HTTPException(status_code=422, detail="Failed to process password-protected PDF images")
+                     
+                     # Check if really encrypted again just in case
+                     import base64
+                     b64 = base64.b64encode(file_bytes).decode('utf-8')
+                     gemini_content_parts.append({
+                        "mime_type": "application/pdf",
+                        "data": b64
+                     })
+
+        else:
+            # Not a PDF (Image), send as is
+            import base64
+            b64 = base64.b64encode(file_bytes).decode('utf-8')
+            gemini_content_parts.append({
+                "mime_type": mime_type,
+                "data": b64
+            })
+            
         
         # Calculate file hash for duplicate detection
         file_hash = hashlib.sha256(file_bytes).hexdigest()
-        import base64, json
-        b64 = base64.b64encode(file_bytes).decode('utf-8')
 
         system_instruction = """1️⃣ INVOICE SYSTEM INSTRUCTION
 (Used during Gemini model initialization for invoice documents)
@@ -411,7 +486,7 @@ Rules:
 """
 
         response = model.generate_content([
-            {"mime_type": file.content_type or "application/octet-stream", "data": b64},
+            *gemini_content_parts,
             prompt
         ], generation_config={"response_mime_type": "application/json"})
 
@@ -430,6 +505,9 @@ Rules:
             status_code=429,
             detail="Gemini API quota exceeded. Please retry later or upgrade plan."
         )
+    except HTTPException as he:
+        # Re-raise HTTP exceptions (like 422 for password)
+        raise he
     except Exception as e:
         import traceback
         print(f"PROCESS DOCUMENT ERROR: {str(e)}")
@@ -450,8 +528,8 @@ async def process_bulk(
 
     genai.configure(api_key=GEMINI_API_KEY)
     
-    # Use flash-lite for bulk processing to save costs and tokens
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    # Use standard flash model for consistency
+    model = genai.GenerativeModel('gemini-2.5-flash')
 
     results = []
     successful = 0
@@ -542,6 +620,8 @@ async def process_invoice_pdf(
         
         # Extract base64 PDF from request
         pdf_base64 = request.get('pdfData', '')
+        password = request.get('password', None)  # Extract password if provided
+
         if not pdf_base64:
             raise HTTPException(status_code=400, detail="No PDF data provided")
         
@@ -550,25 +630,43 @@ async def process_invoice_pdf(
         
         # Extract text from PDF using pdfplumber
         extracted_text = ""
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    extracted_text += page_text + "\n"
+        try:
+            with pdfplumber.open(io.BytesIO(pdf_bytes), password=password) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        extracted_text += page_text + "\n"
+        except Exception as e:
+            error_str = str(e).lower()
+            if "password" in error_str or "encrypted" in error_str:
+                raise HTTPException(status_code=422, detail="Password required")
+            # If generic error (e.g. not a valid PDF or other issue), just log and continue to OCR fallback? 
+            # If password failed, we definitely can't do OCR either as images are also locked.
+            # So simple check:
+            print(f"PDFPlumber failed: {e}")
+            if "password" in error_str or "encrypted" in error_str:
+                raise HTTPException(status_code=422, detail="Password required")
         
         # If no text extracted (scanned PDF), fall back to OCR
         if not extracted_text.strip():
-            try:
+             # Check if it was password locked but we missed it (unlikely with pdfplumber check above)
+             pass 
+
+             try:
                 import pytesseract
                 from pdf2image import convert_from_bytes
                 
-                images = convert_from_bytes(pdf_bytes)
+                # Note: convert_from_bytes also needs password if encrypted
+                images = convert_from_bytes(pdf_bytes, userpw=password) if password else convert_from_bytes(pdf_bytes)
                 extracted_text = "\n".join(
                     pytesseract.image_to_string(img) 
                     for img in images
                 )
-            except Exception as ocr_error:
+             except Exception as ocr_error:
                 print(f"OCR failed: {str(ocr_error)}")
+                ocr_str = str(ocr_error).lower()
+                if "password" in ocr_str or "encrypted" in ocr_str:
+                     raise HTTPException(status_code=422, detail="Password required")
                 raise HTTPException(status_code=500, detail="Could not extract text from PDF")
         
         # ✅ IMPORTANT: Extract ALL text - do NOT filter anything
@@ -602,7 +700,7 @@ async def process_invoice_pdf(
         
         # Configure Gemini
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Optimized prompt for Tally
         prompt = f"""Extract invoice data and return ONLY valid JSON.
@@ -682,6 +780,7 @@ Return ONLY the JSON object, no markdown formatting."""
 @app.post("/ai/process-bank-statement-pdf")
 async def process_bank_statement_pdf(
     file: UploadFile = File(...),
+    password: Optional[str] = Form(None),
     authorization: str = Header(None)
 ):
     """
@@ -709,14 +808,17 @@ async def process_bank_statement_pdf(
     
     extracted_text = ""
     try:
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        with pdfplumber.open(io.BytesIO(pdf_bytes), password=password) as pdf:
             for page in pdf.pages:
                 text = page.extract_text()
                 if text:
                     extracted_text += text + "\n"
     except Exception as e:
         print(f"PDF Text extraction failed: {e}")
-        # Continue to image fallback
+        error_str = str(e).lower()
+        if "password" in error_str or "encrypted" in error_str:
+            raise HTTPException(status_code=422, detail="Password required")
+        # Continue to image fallback ONLY if not a password error
     
     # Check if we have enough text to consider it a digital PDF
     # (Scanned docs might have a few chars of noise)
@@ -734,7 +836,7 @@ Extract data from the following text into this exact JSON structure:
 
 {{
   "documentType": "BANK_STATEMENT" or "INVOICE",
-  "bankName": "string (inferred from header)",
+  "bankName": "string (Extract from top header. DO NOT output 'Unknown Bank' unless impossible to find)",
   "accountNumber": "string (full or masked)",
   "accountNumberLast4": "string (last 4 digits)",
   "totalWithdrawals": number (sum of all debits),
@@ -756,13 +858,24 @@ Extract data from the following text into this exact JSON structure:
 RULES:
 1. **CRITICAL CHECK**: If this document contains "Tax Invoice", "Bill To", "GSTIN", "Supply", and is clearly a bill from a vendor, set "documentType" to "INVOICE" and return immediately.
 2. Detect Date Format: Normalize all dates to YYYY-MM-DD.
-2. Description: Combine multi-line descriptions if they belong to the same transaction.
-3. Debits/Credits: Identify columns correctly. 'Dr' or 'Withdrawal' or 'Debit' is Withdrawal. 'Cr' or 'Deposit' or 'Credit' is Deposit.
-4. If a transaction has no value in Withdrawal/Deposit, set it to 0.
-5. Balance: Extract running balance if available.
+3. **Bank Name**: Look at the FIRST FEW LINES. Common banks: HDFC, ICICI, SBI, Axis, Kotak, Canara, Yes Bank.
+4. **Columns**:
+   - 'Debit', 'Dr', 'Withdrawal', 'Payments' -> withdrawal
+   - 'Credit', 'Cr', 'Deposit', 'Receipts' -> deposit
+5. **Transactions**:
+   - Combine multi-line descriptions.
+   - If a row has NO amount in neither Debit nor Credit, SKIP IT (it might be a header or sub-header).
+   - Ensure no commas in numbers.
+
+PRIORITY INSTRUCTION:
+Check the document type FIRST.
+If it is an invoice, set "documentType": "INVOICE" and ignore other fields.
+If it is a bank statement, set "documentType": "BANK_STATEMENT" and extract all fields.
 
 Text Content:
 {extracted_text}
+
+JSON OUTPUT ONLY:
 """
         try:
             response = model.generate_content(
@@ -795,7 +908,14 @@ Text Content:
     # ================= FALLBACK: IMAGE PROCESSING =================
     print("📸 Fallback: Processing Bank Statement as IMAGES")
     
-    pages = split_pdf_to_images(pdf_bytes)
+    try:
+        pages = split_pdf_to_images(pdf_bytes, password=password)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "password" in error_str or "encrypted" in error_str:
+             raise HTTPException(status_code=422, detail="Password required")
+        raise HTTPException(status_code=500, detail=f"Failed to convert PDF to images: {str(e)}")
+        
     transactions = []
 
     for img_base64, _ in pages:
@@ -840,7 +960,7 @@ async def process_bank_statement(
 
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-2.5-flash')
 
         file_bytes = await file.read()
         import base64, json
@@ -852,7 +972,7 @@ You are a bank statement parser.
 Return VALID JSON ONLY with the following fields (matches React Schema):
 
 - documentType (BANK_STATEMENT | INVOICE)
-- bankName
+- bankName (Look for logo/text at top)
 - accountNumber
 - accountNumberLast4
 - totalWithdrawals
@@ -862,8 +982,8 @@ Return VALID JSON ONLY with the following fields (matches React Schema):
       id (generate a random string),
       date (YYYY-MM-DD),
       description,
-      withdrawal (money going OUT),
-      deposit (money coming IN),
+      withdrawal (money going OUT - Debit/Dr),
+      deposit (money coming IN - Credit/Cr),
       balance,
       voucherType ("Payment" if withdrawal > 0 else "Receipt"),
       contraLedger (Infer intelligently from description, e.g. "Staff Welfare")
@@ -874,11 +994,17 @@ IMPORTANT RULES:
 1. **CRITICAL CHECK**: If this document looks like a BILL, TAX INVOICE, or RECEIPT (has GSTIN, Supplier Name, Item list), set `documentType` to "INVOICE".
 2. If it is a Bank Statement, set `documentType` to "BANK_STATEMENT".
 - Extract account number from the statement header
-- VoucherType:
-  - Withdrawal → Payment
-  - Deposit → Receipt
-- contraLedger:
-  - Do NOT default blindly to "Suspense A/c"
+- **Bank Name**: Explicitly look for the bank name at the top.
+- **Columns**:
+  - Ensure 'Withdrawal' column maps to 'withdrawal' field.
+  - Ensure 'Deposit' column maps to 'deposit' field.
+  - If there is only one 'Amount' column and a 'Type' column (Dr/Cr), parse accordingly.
+   - If there is only one 'Amount' column and a 'Type' column (Dr/Cr), parse accordingly.
+
+PRIORITY INSTRUCTION:
+Check the document type FIRST.
+If it is an invoice, set "documentType": "INVOICE" and ignore other fields.
+If it is a bank statement, set "documentType": "BANK_STATEMENT" and extract all fields.
 """
 
         response = model.generate_content([

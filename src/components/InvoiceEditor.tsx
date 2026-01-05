@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { InvoiceData, LineItem } from '../types';
 import { Plus, Trash2, Save, RefreshCw, FileText, FilePlus, ExternalLink, ArrowRight, Loader2, ChevronLeft, ChevronRight, FileDown, Check, AlertTriangle, ShieldAlert, User, Building, ChevronDown, ZoomIn, ZoomOut, RotateCw, RotateCcw } from 'lucide-react';
@@ -11,7 +10,10 @@ interface InvoiceEditorProps {
     onSave: (data: InvoiceData, switchTab?: boolean) => void;
     onPush: (data: InvoiceData) => void;
     onDelete?: () => void;
+    onDeleteAll?: () => void;
     onAddFile?: () => void;
+    // New prop for canceling AI scan
+    onCancelScan?: () => void;
     onAddFiles?: (files: File[]) => void;
     isPushing: boolean;
     isScanning?: boolean;
@@ -21,6 +23,10 @@ interface InvoiceEditorProps {
     onPrev?: () => void;
     hasNext?: boolean;
     hasPrev?: boolean;
+    companies: string[];
+    loadCompanies: () => void;
+    loadingCompanies: boolean;
+    onPushAll?: () => void;
 }
 
 /**
@@ -44,7 +50,9 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
     onSave,
     onPush,
     onDelete,
+    onDeleteAll,
     onAddFile,
+    onCancelScan,
     onAddFiles,
     isPushing,
     isScanning = false,
@@ -53,10 +61,15 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
     onNext,
     onPrev,
     hasNext = false,
-    hasPrev = false
+    hasPrev = false,
+    companies,
+    loadCompanies,
+    loadingCompanies,
+    onPushAll
 }) => {
     const [formData, setFormData] = useState<InvoiceData>(() => ({
         ...data,
+        voucherType: data.voucherType || 'Purchase',
         lineItems: data.lineItems.map((item) => ({
             ...item,
             id: item.id && item.id.length > 10 ? item.id : uuidv4()
@@ -70,16 +83,14 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
     const [zoom, setZoom] = useState(1);
     const [rotation, setRotation] = useState(0);
 
-    // Company Fetching State
-    const [companies, setCompanies] = useState<string[]>([]);
-    const [loadingCompanies, setLoadingCompanies] = useState(false);
-
     // Ledger Fetching State
     const [ledgers, setLedgers] = useState<string[]>([]);
     const [loadingLedgers, setLoadingLedgers] = useState(false);
 
     // Dropdown UI State
     const [activeDropdown, setActiveDropdown] = useState<'supplier' | 'buyer' | null>(null);
+    const [showDeleteDropdown, setShowDeleteDropdown] = useState(false);
+    const [showPushDropdown, setShowPushDropdown] = useState(false);
 
     const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -96,8 +107,6 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
         }
     };
 
-
-
     // Close dropdown when clicking outside
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -109,29 +118,28 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // Only sync from data prop when we're actually switching to a different invoice
-    // Use a ref to avoid triggering re-renders and to persist across renders
-    const lastSyncedInvoiceRef = useRef<string>(data.invoiceNumber || '');
+    // Only sync from data prop when the actual invoice changes (different invoice number)
+    // This prevents losing edits including deleted line items
+    const [lastSyncedInvoice, setLastSyncedInvoice] = useState<string>(data.invoiceNumber || '');
 
     useEffect(() => {
-        const currentInvoiceId = data.invoiceNumber || '';
-
-        // Only sync if we're switching to a genuinely different invoice
-        // This prevents resetting edits (including deleted items) on parent re-renders
-        if (currentInvoiceId !== lastSyncedInvoiceRef.current) {
+        // Only sync if the invoice number changed (switching invoices)
+        // or if this is the first load (lastSyncedInvoice is empty and data has content)
+        if (data.invoiceNumber !== lastSyncedInvoice || (!lastSyncedInvoice && data.lineItems.length > 0)) {
             // Deep clone the data to avoid shared references
-            // Ensure every line item has a unique ID
+            // Ensure every line item has a unique ID to prevent editing issues
             const clonedData: InvoiceData = {
                 ...data,
                 lineItems: data.lineItems.map((item) => ({
                     ...item,
+                    // Generate a unique ID if missing or too short
                     id: item.id && item.id.length > 10 ? item.id : uuidv4()
                 }))
             };
             setFormData(clonedData);
-            lastSyncedInvoiceRef.current = currentInvoiceId;
+            setLastSyncedInvoice(data.invoiceNumber || '');
         }
-    }, [data.invoiceNumber]); // Only depend on invoiceNumber, not entire data object
+    }, [data, lastSyncedInvoice]);
 
     useEffect(() => {
         if (file) {
@@ -145,55 +153,31 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
         loadCompanies();
     }, []);
 
+    // Auto-select first company if none selected (Fix for Validation Error)
+    useEffect(() => {
+        if (companies.length > 0 && !formData.targetCompany) {
+            handleChange('targetCompany', companies[0]);
+        }
+    }, [companies, formData.targetCompany]); // Only run when companies load or targetCompany is empty
+
     // Fetch ledgers whenever targetCompany changes
     useEffect(() => {
         fetchLedgers();
     }, [formData.targetCompany]);
 
-    // Effect to pre-fill company details
+    // Effect to pre-fill company details - REMOVED to allow validation of extracted data
+    // We do NOT want to overwrite the extracted Buyer/Supplier name with the Target Company name automatically.
+    // This ensures that if the invoice belongs to a different company, the mismatch is detected.
+    /*
     useEffect(() => {
         const prefillCompanyData = async () => {
-            const target = formData.targetCompany;
-            if (!target) return;
-
-            setLoadingCompanies(true);
-            try {
-                const details = await fetchCompanyDetails(target);
-                if (details) {
-                    setFormData(prev => {
-                        const newData = { ...prev };
-                        const isSales = prev.voucherType === 'Sales';
-
-                        if (isSales) {
-                            // Sales: We are Supplier
-                            newData.supplierName = target;
-                            if (details.gstin) newData.supplierGstin = details.gstin;
-                        } else {
-                            // Purchase: We are Buyer
-                            newData.buyerName = target;
-                            if (details.gstin) newData.buyerGstin = details.gstin;
-                        }
-                        return newData;
-                    });
-                }
-            } catch (e) {
-                console.error(e);
-            } finally {
-                setLoadingCompanies(false);
-            }
+            // ... (removed)
         };
-
         if (!isScanning) {
             prefillCompanyData();
         }
     }, [formData.targetCompany, formData.voucherType, isScanning]);
-
-    const loadCompanies = async () => {
-        setLoadingCompanies(true);
-        const list = await fetchOpenCompanies();
-        setCompanies(list);
-        setLoadingCompanies(false);
-    };
+    */
 
     const fetchLedgers = async () => {
         setLoadingLedgers(true);
@@ -231,6 +215,33 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                 const dateObj = new Date(y, m - 1, d);
                 if (dateObj.getFullYear() !== y || dateObj.getMonth() !== m - 1 || dateObj.getDate() !== d) {
                     errors.push({ field: 'invoiceDate', message: 'Invalid calendar date' });
+                }
+            }
+        }
+
+        // Company Name Mapping Validation (Fuzzy Match)
+        // Purchase -> User (Target Company) is Buyer
+        // Sales -> User (Target Company) is Supplier
+        // Logic: Check if one contains the other to handle "ABC Pvt Ltd" vs "ABC"
+        const target = formData.targetCompany?.trim().toLowerCase();
+        if (target) {
+            if (formData.voucherType === 'Purchase') {
+                const buyer = formData.buyerName?.trim().toLowerCase();
+                if (buyer) {
+                    // Check if target is inside buyer OR buyer is inside target
+                    const match = target.includes(buyer) || buyer.includes(target);
+                    if (!match) {
+                        errors.push({ field: 'companyMap', message: `Purchase Voucher: Company '${formData.targetCompany}' should match Buyer Name.` });
+                    }
+                }
+            } else if (formData.voucherType === 'Sales') {
+                const supplier = formData.supplierName?.trim().toLowerCase();
+                if (supplier) {
+                    // Check if target is inside supplier OR supplier is inside target
+                    const match = target.includes(supplier) || supplier.includes(target);
+                    if (!match) {
+                        errors.push({ field: 'companyMap', message: `Sales Voucher: Company '${formData.targetCompany}' should match Supplier Name.` });
+                    }
                 }
             }
         }
@@ -327,6 +338,23 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
 
     const handleChange = (field: keyof InvoiceData, value: string) => {
         setFormData(prev => ({ ...prev, [field]: value }));
+    };
+
+    // Specialized Handler for Voucher Type (Swap Logic - RETAINED)
+    const handleVoucherTypeChange = (newType: 'Sales' | 'Purchase') => {
+        setFormData(prev => {
+            if (prev.voucherType === newType) return prev;
+
+            // Simple Swap: Supplier <-> Buyer
+            return {
+                ...prev,
+                voucherType: newType,
+                supplierName: prev.buyerName,
+                supplierGstin: prev.buyerGstin,
+                buyerName: prev.supplierName,
+                buyerGstin: prev.supplierGstin
+            };
+        });
     };
 
     const handleLineItemChange = (id: string, field: keyof LineItem, value: string | number | boolean) => {
@@ -528,6 +556,15 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                         <p className="text-slate-500 dark:text-slate-400 mt-3 text-sm text-center max-w-xs px-4">
                             Extracting Invoice Details, GSTIN, and Line Items.
                         </p>
+
+                        {onCancelScan && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onCancelScan(); }}
+                                className="mt-6 px-5 py-2 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm font-semibold shadow-sm border border-slate-200 dark:border-slate-700 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 dark:hover:text-red-400 transition-colors flex items-center gap-2"
+                            >
+                                Cancel Process
+                            </button>
+                        )}
                     </div>
                 )}
 
@@ -555,21 +592,64 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                             <FilePlus className="w-3.5 h-3.5" /> Add New File
                         </button>
                         {onDelete && (
-                            <button
-                                onClick={() => onDelete && onDelete()}
-                                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border bg-red-50 border-red-200 text-red-700 hover:bg-red-100 dark:bg-red-900/30 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/50"
-                                disabled={isScanning}
-                            >
-                                <Trash2 className="w-3.5 h-3.5" /> Delete Entry
-                            </button>
+                            <div className="relative">
+                                <button
+                                    onClick={() => setShowDeleteDropdown(prev => !prev)}
+                                    className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border bg-red-50 border-red-200 text-red-700 hover:bg-red-100 dark:bg-red-900/30 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/50"
+                                    disabled={isScanning}
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" /> Delete <ChevronDown className="w-3 h-3 ml-0.5" />
+                                </button>
+                                {showDeleteDropdown && (
+                                    <div className="absolute top-full text-left right-0 mt-1 w-40 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden z-[100] animate-fade-in flex flex-col py-1">
+                                        <button
+                                            onClick={() => { setShowDeleteDropdown(false); onDelete(); }}
+                                            className="px-4 py-2.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 dark:hover:text-red-400 text-left w-full flex items-center gap-2"
+                                        >
+                                            Delete Current
+                                        </button>
+                                        {onDeleteAll && (
+                                            <button
+                                                onClick={() => { setShowDeleteDropdown(false); onDeleteAll(); }}
+                                                className="px-4 py-2.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 dark:hover:text-red-400 text-left w-full flex items-center gap-2 border-t border-slate-100 dark:border-slate-700/50"
+                                            >
+                                                Delete All
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
                         )}
-
                         <button onClick={handleSaveDraft} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shadow-sm border ${draftSaved ? 'bg-green-50 border-green-200 text-green-700 dark:bg-green-900/30 dark:border-green-800 dark:text-green-400' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700'}`}>
                             {draftSaved ? <Check className="w-3.5 h-3.5" /> : <FileDown className="w-3.5 h-3.5" />} {draftSaved ? 'Saved' : 'Save Draft'}
                         </button>
-                        <button onClick={handlePush} disabled={isPushing || isScanning} className={`flex items-center gap-2 px-3 py-1.5 text-white text-xs font-medium rounded-lg transition-colors shadow-sm border-2 border-transparent ${isPushing || isScanning ? 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 border-slate-300 dark:border-slate-600' : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/10'}`}>
-                            {isPushing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />} {isPushing ? 'Pushing...' : 'Push to Tally'}
-                        </button>
+                        <div className="relative">
+                            <button
+                                onClick={() => setShowPushDropdown(prev => !prev)}
+                                disabled={isPushing || isScanning}
+                                className={`flex items-center gap-2 px-3 py-1.5 text-white text-xs font-medium rounded-lg transition-colors shadow-sm border-2 border-transparent ${isPushing || isScanning ? 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 border-slate-300 dark:border-slate-600' : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/10'}`}
+                            >
+                                {isPushing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />} {isPushing ? 'Pushing...' : 'Push to Tally'} <ChevronDown className="w-3 h-3 ml-0.5" />
+                            </button>
+                            {showPushDropdown && (
+                                <div className="absolute top-full text-left right-0 mt-1 w-40 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden z-[100] animate-fade-in flex flex-col py-1">
+                                    <button
+                                        onClick={() => { setShowPushDropdown(false); handlePush(); }}
+                                        className="px-4 py-2.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:text-emerald-600 dark:hover:text-emerald-400 text-left w-full flex items-center gap-2"
+                                    >
+                                        Push Current
+                                    </button>
+                                    {onPushAll && (
+                                        <button
+                                            onClick={() => { setShowPushDropdown(false); onPushAll(); }}
+                                            className="px-4 py-2.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:text-emerald-600 dark:hover:text-emerald-400 text-left w-full flex items-center gap-2 border-t border-slate-100 dark:border-slate-700/50"
+                                        >
+                                            Push All
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                         {hasNext ? (
                             <button onClick={handleSaveAndNext} className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors shadow-sm" disabled={isScanning}><Save className="w-3.5 h-3.5" /> Save & Next</button>
                         ) : (
@@ -597,7 +677,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase mb-1">Voucher Type</label>
-                                <select value={formData.voucherType} onChange={(e) => handleChange('voucherType', e.target.value as 'Sales' | 'Purchase')} className={getBaseInputClass(false)}>
+                                <select value={formData.voucherType} onChange={(e) => handleVoucherTypeChange(e.target.value as 'Sales' | 'Purchase')} className={getBaseInputClass(false)}>
                                     <option value="Sales">Sales</option>
                                     <option value="Purchase">Purchase</option>
                                 </select>
@@ -607,7 +687,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                                 <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase mb-1 flex items-center gap-2"><Building className="w-3 h-3" /> Target Company</label>
                                 <div className="flex gap-1">
                                     <select value={formData.targetCompany || ''} onChange={(e) => handleChange('targetCompany', e.target.value)} className={`${getBaseInputClass(false)} flex-1 cursor-pointer`}>
-                                        <option value="">Active Company (Default)</option>
+                                        <option value="">Select Company...</option>
                                         {companies.map(c => <option key={c} value={c}>{c}</option>)}
                                     </select>
                                     <button onClick={loadCompanies} disabled={loadingCompanies} className="p-2 text-slate-500 dark:text-slate-400 hover:text-tally-600 hover:bg-slate-100 dark:hover:bg-slate-700 rounded border border-slate-300 dark:border-slate-600 transition-colors" title="Refresh Company List">
@@ -742,7 +822,7 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                                             <td className="px-2 py-3 font-mono font-medium"><input type="number" value={item.amount} onChange={(e) => handleLineItemChange(item.id, 'amount', Number(e.target.value))} className={getTableInputClass(hasError('lineItemMath', item.id))} /></td>
                                             <td className="px-2 py-3">
                                                 <select value={item.gstRate} onChange={(e) => handleLineItemChange(item.id, 'gstRate', Number(e.target.value))} className={`${getTableInputClass(false)} text-center font-bold text-indigo-600 dark:text-indigo-400`}>
-                                                    <option value={0}>0%</option><option value={5}>5%</option><option value={12}>12%</option><option value={18}>18%</option><option value={28}>28%</option><option value={40}>40%</option>
+                                                    <option value={0}>0%</option><option value={5}>5%</option><option value={12}>12%</option><option value={18}>18%</option><option value={28}>28%</option>
                                                 </select>
                                             </td>
                                             <td className="px-2 py-3 text-center">

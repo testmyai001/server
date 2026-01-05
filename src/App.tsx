@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import InvoiceEditor from './components/InvoiceEditor';
 import TallyLogs from './components/TallyLogs';
 import Dashboard from './components/Dashboard';
@@ -13,13 +13,17 @@ import SettingsModal from './components/SettingsModal';
 import AuthScreen from './components/AuthScreen';
 import { InvoiceData, LogEntry, AppView, ProcessedFile, Message } from './types';
 import { ArrowRight, CheckCircle2, X, FileText, AlertTriangle, CloudUpload, LayoutDashboard } from 'lucide-react';
-import { checkTallyConnection, fetchExistingLedgers, generateTallyXml, pushToTally } from './services/tallyService';
+import { checkTallyConnection, fetchExistingLedgers, generateTallyXml, pushToTally, fetchOpenCompanies, getInvoiceLedgerRequirements } from './services/tallyService';
+import BulkLedgerCreationModal from './components/BulkLedgerCreationModal';
+import BulkProcessLoader from './components/BulkProcessLoader';
+import DeleteConfirmationModal from './components/DeleteConfirmationModal';
 import { processDocumentWithAI } from './services/backendService';
 import { saveInvoiceToDB, saveLogToDB, deleteUploadFromDB, saveInvoiceRegistry, checkInvoiceExists, getInvoiceRegistry } from './services/dbService';
 import { TALLY_API_URL, EMPTY_INVOICE, BACKEND_API_KEY } from './constants';
 import { v4 as uuidv4 } from 'uuid';
 import TallyDisconnectedModal from './components/TallyDisconnectedModal';
 import ImportSummaryModal from './components/ImportSummaryModal';
+import PasswordInputModal from './components/PasswordInputModal';
 
 
 const App: React.FC = () => {
@@ -51,6 +55,8 @@ const App: React.FC = () => {
     const [pendingExcelFile, setPendingExcelFile] = useState<ProcessedFile | null>(null);
     const [mismatchedFileAlert, setMismatchedFileAlert] = useState<{ show: boolean, file: ProcessedFile | null }>({ show: false, file: null });
 
+    const isCancelledRef = useRef(false);
+
     // Invalid File Alert
     const [invalidFileAlert, setInvalidFileAlert] = useState<{ show: boolean, fileName: string, reason: string }>({ show: false, fileName: '', reason: '' });
 
@@ -62,12 +68,27 @@ const App: React.FC = () => {
     const [isPushing, setIsPushing] = useState(false);
     const [shouldAutoTriggerUpload, setShouldAutoTriggerUpload] = useState(false);
 
+    // Companies State for Invoice Editor
+    const [companies, setCompanies] = useState<string[]>([]);
+    const [loadingCompanies, setLoadingCompanies] = useState(false);
+
+    // Bulk Push Ledger Confirmation State
+    const [showBulkLedgerModal, setShowBulkLedgerModal] = useState(false);
+    const [bulkProposedLedgers, setBulkProposedLedgers] = useState<string[]>([]);
+    const [pendingBulkFiles, setPendingBulkFiles] = useState<ProcessedFile[]>([]);
+
+    // Delete Confirmation State
+    const [deleteConfirm, setDeleteConfirm] = useState<{ show: boolean; mode: 'single' | 'all'; id?: string; title: string; message: string; } | null>(null);
+
+    // Bulk Processing State
+    const [pendingBulkBatch, setPendingBulkBatch] = useState<{ ids: string[], total: number } | null>(null);
+
     // Import Summary State
     const [summaryModalOpen, setSummaryModalOpen] = useState(false);
     const [importSummary, setImportSummary] = useState<{ total: number, skipped: number, success: number, failed: number, errors?: string[] }>({ total: 0, skipped: 0, success: 0, failed: 0 });
 
     // Toast
-    const [toast, setToast] = useState<{ show: boolean, message: string }>({ show: false, message: '' });
+    const [toast, setToast] = useState<{ show: boolean, message: string, type: 'success' | 'error' | 'warning' }>({ show: false, message: '', type: 'success' });
 
     // Dark Mode
     const [darkMode, setDarkMode] = useState(() => {
@@ -82,6 +103,10 @@ const App: React.FC = () => {
     const [tallyStatus, setTallyStatus] = useState<{ online: boolean; info: string; mode: 'full' | 'blind' | 'none'; activeCompany?: string }>({ online: false, info: 'Connecting...', mode: 'none' });
     const [showTallyDisconnectModal, setShowTallyDisconnectModal] = useState(false);
 
+    // Password Handling
+    const [showPasswordModal, setShowPasswordModal] = useState(false);
+    const [pendingPasswordFile, setPendingPasswordFile] = useState<ProcessedFile | null>(null);
+
     useEffect(() => {
         if (darkMode) {
             document.documentElement.classList.add('dark');
@@ -94,7 +119,7 @@ const App: React.FC = () => {
 
     useEffect(() => {
         if (toast.show) {
-            const timer = setTimeout(() => setToast({ show: false, message: '' }), 3000);
+            const timer = setTimeout(() => setToast(prev => ({ ...prev, show: false })), 3000);
             return () => clearTimeout(timer);
         }
     }, [toast.show]);
@@ -132,6 +157,28 @@ const App: React.FC = () => {
         }
     }, [currentView, processedFiles, currentInvoice, currentFile]);
 
+    useEffect(() => {
+        if (currentView === AppView.BULK_PROCESSING && pendingBulkBatch) {
+            const batchFiles = processedFiles.filter(f => pendingBulkBatch.ids.includes(f.id));
+            const completed = batchFiles.filter(f => f.status !== 'Pending' && f.status !== 'Processing');
+
+            if (completed.length === pendingBulkBatch.total && pendingBulkBatch.total > 0) {
+                // All Done - Redirect to Editor with first file
+                setTimeout(() => {
+                    const first = batchFiles[0];
+                    if (first) {
+                        setCurrentFile(first.file);
+                        setCurrentInvoice(first.data || null);
+                        setCurrentView(AppView.EDITOR);
+                    } else {
+                        setCurrentView(AppView.DASHBOARD);
+                    }
+                    setPendingBulkBatch(null);
+                }, 1500); // Small delay to see 100%
+            }
+        }
+    }, [processedFiles, currentView, pendingBulkBatch]);
+
     const checkStatus = async () => {
         setTallyStatus({ online: false, info: 'Checking...', mode: 'none' });
         const status = await checkTallyConnection();
@@ -142,6 +189,19 @@ const App: React.FC = () => {
             activeCompany: status.activeCompany
         });
     };
+
+    const loadCompanies = async () => {
+        setLoadingCompanies(true);
+        try {
+            const list = await fetchOpenCompanies();
+            setCompanies(list);
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setLoadingCompanies(false);
+        }
+    };
+
 
     const handlePushLog = (status: 'Success' | 'Failed', message: string, response?: string) => {
         const log: LogEntry = {
@@ -156,7 +216,7 @@ const App: React.FC = () => {
         setLogs(prev => [log, ...prev]);
         saveLogToDB(log);
         if (status === 'Success') {
-            setToast({ show: true, message: message });
+            setToast({ show: true, message: message, type: 'success' });
         }
     };
 
@@ -215,13 +275,33 @@ const App: React.FC = () => {
             uploadTimestamp: Date.now()
         }));
         setProcessedFiles(prev => [...newEntries, ...prev]);
+        isCancelledRef.current = false;
+
+        // Check for Bulk
+        if (files.length > 1) {
+            const ids = newEntries.map(e => e.id);
+            setPendingBulkBatch({ ids, total: ids.length });
+            setCurrentView(AppView.BULK_PROCESSING);
+        } else if (files.length === 1) {
+            setCurrentFile(files[0]);
+            setCurrentInvoice(null);
+            setCurrentView(AppView.EDITOR);
+        } else {
+            setCurrentView(AppView.DASHBOARD);
+        }
+
         for (const entry of newEntries) {
+            if (isCancelledRef.current) break;
+
+            // Process (async in background loop, but we do await strictly if we want sequential to avoid quota limits?)
+            // processSingleFile is async. If we await, it is sequential.
+            // This is safer for rate limits.
             await processSingleFile(entry);
         }
     };
 
-    const processSingleFile = async (entry: ProcessedFile, retryCount = 0) => {
-        if (retryCount === 0) {
+    const processSingleFile = async (entry: ProcessedFile, retryCount = 0, password?: string) => {
+        if (retryCount === 0 && !password) {
             setProcessedFiles(prev => prev.map(f => f.id === entry.id ? { ...f, status: 'Processing' } : f));
         }
 
@@ -230,7 +310,19 @@ const App: React.FC = () => {
             if (!isAuthenticated) {
                 throw new Error("User not authenticated");
             }
-            const result = await processDocumentWithAI(entry.file, BACKEND_API_KEY);
+            if (isCancelledRef.current) return;
+            const result = await processDocumentWithAI(entry.file, BACKEND_API_KEY, password);
+            if (isCancelledRef.current) return;
+
+             // Handle Password Required
+            if (result.status === 422 && (result.message?.includes('Password') || result.message?.includes('password'))) {
+                setPendingPasswordFile(entry);
+                setShowPasswordModal(true);
+                // Set status to Pending so it doesn't look failed
+                setProcessedFiles(prev => prev.map(f => f.id === entry.id ? { ...f, status: 'Pending', error: 'Password Required' } : f));
+                return;
+            }
+
             if (!result.success || !result.invoice) {
                 throw new Error(result.message || 'Failed to process document');
             }
@@ -260,9 +352,8 @@ const App: React.FC = () => {
             }));
 
             saveInvoiceToDB(data, 'Ready', entry.id);
-            saveInvoiceToDB(data, 'Ready', entry.id);
             // Removed auto-save to registry. Registry save happens only on final confirmation/push.
-            setToast({ show: true, message: `${entry.fileName} processed successfully` });
+            setToast({ show: true, message: `${entry.fileName} processed successfully`, type: 'success' });
 
         } catch (error) {
             const duration = ((Date.now() - start) / 1000 / 60).toFixed(2);
@@ -273,7 +364,7 @@ const App: React.FC = () => {
                 setInvalidFileAlert({ show: true, fileName: entry.fileName, reason: "File empty/corrupted." });
             }
 
-            if (retryCount < 2) {
+            if (retryCount < 2 && !password) { // Don't auto-retry if password failed (unless we want to?)
                 // Retry Logic
                 console.log(`Retrying ${entry.fileName}... Attempt ${retryCount + 1}`);
                 setTimeout(() => processSingleFile(entry, retryCount + 1), 2000);
@@ -308,6 +399,22 @@ const App: React.FC = () => {
     const handleRedirectToInvoice = (file: File) => {
         setCurrentView(AppView.DASHBOARD);
         handleBulkUpload([file]);
+    };
+
+    const handleCancelBulkProcessing = () => {
+        isCancelledRef.current = true;
+
+        if (pendingBulkBatch) {
+            const batchIds = pendingBulkBatch.ids;
+            // Delete from DB
+            batchIds.forEach(id => deleteUploadFromDB(id).catch(console.error));
+            // Remove from State
+            setProcessedFiles(prev => prev.filter(f => !batchIds.includes(f.id)));
+        }
+
+        setPendingBulkBatch(null);
+        setCurrentView(AppView.DASHBOARD);
+        setToast({ show: true, message: "Bulk upload cancelled and files removed.", type: 'warning' });
     };
 
     const handleRetryFailed = () => {
@@ -348,7 +455,7 @@ const App: React.FC = () => {
     const handleSaveInvoice = (data: InvoiceData, switchTab: boolean = true, silent: boolean = false) => {
         setCurrentInvoice(data);
         if (switchTab) setActiveTab('xml');
-        else if (!silent) setToast({ show: true, message: "Invoice updated successfully" });
+        else if (!silent) setToast({ show: true, message: "Invoice updated successfully", type: 'success' });
 
         if (currentFile) {
             const { correct, incorrect } = calculateEntryStats(data);
@@ -363,7 +470,7 @@ const App: React.FC = () => {
             // Check for duplicates purely for UI warning in editor (non-blocking)
             checkInvoiceExists(data.invoiceNumber).then(exists => {
                 if (exists) {
-                    setToast({ show: true, message: `Warning: Invoice ${data.invoiceNumber} is already registered.` });
+                    setToast({ show: true, message: `Warning: Invoice ${data.invoiceNumber} is already registered.`, type: 'warning' });
                 }
             });
         }
@@ -379,10 +486,18 @@ const App: React.FC = () => {
         }
     };
 
-    const handleDeleteFile = (fileId?: string) => {
+    const performDeleteFile = (fileId?: string) => {
         const targetFileEntry = fileId ? processedFiles.find(f => f.id === fileId) : (currentFile ? processedFiles.find(f => f.file === currentFile) : undefined);
 
-        if (!targetFileEntry) return;
+        // Even if no entry found, we must clear the VIEW state if we are in that view
+        if (!targetFileEntry) {
+            if (currentView === AppView.BANK_STATEMENT) setPendingBankStatementFile(null);
+            if (currentView === AppView.EXCEL_IMPORT) setPendingExcelFile(null);
+
+            // If we have an ID but not found in list, we might still want to trigger UI refresh or just return
+            // But if we are here via a manual delete click on the View, we generally want to Clear the View.
+            return;
+        }
 
         // 1. Delete from DB
         deleteUploadFromDB(targetFileEntry.id).catch(console.error);
@@ -417,6 +532,20 @@ const App: React.FC = () => {
         // 5. Update State
         setProcessedFiles(updatedFiles);
 
+        // Clear pending states if they matched the deleted file
+        if (pendingBankStatementFile && (targetFileEntry.file === pendingBankStatementFile || targetFileEntry.id === (pendingBankStatementFile as any).id || (currentView === AppView.BANK_STATEMENT && targetFileEntry.sourceType === 'BANK_STATEMENT'))) {
+            setPendingBankStatementFile(undefined);
+        }
+        if (pendingExcelFile && (targetFileEntry.file === pendingExcelFile.file || targetFileEntry.id === pendingExcelFile.id)) setPendingExcelFile(undefined);
+
+        if (currentView === AppView.BANK_STATEMENT && targetFileEntry.sourceType === 'BANK_STATEMENT') {
+            // Stay in bank statement view but reset
+            setPendingBankStatementFile(undefined);
+            // Force refresh by setting View again or just let state update handle it
+            // We set explicitly to ensure UI clears
+            return;
+        }
+
         if (nextInvoice && updatedFiles.some(f => f.id === nextInvoice?.id)) {
             // Wait a tick or just update current
             // Since handleViewInvoice relies on processedFiles state (which is stale in this closure),
@@ -428,7 +557,61 @@ const App: React.FC = () => {
             // No other invoices found
             setCurrentFile(undefined);
             setCurrentInvoice(null);
-            setCurrentView(AppView.EDITOR);
+            if (currentView !== AppView.BANK_STATEMENT && currentView !== AppView.EXCEL_IMPORT) {
+                setCurrentView(AppView.EDITOR);
+            }
+        }
+    };
+
+    const performDeleteAllFiles = () => {
+        // if (!window.confirm("Are you sure you want to delete ALL files? This cannot be undone.")) return; // Moved to modal
+
+        // Delete all from DB
+        processedFiles.forEach(f => deleteUploadFromDB(f.id).catch(console.error));
+
+        setProcessedFiles([]);
+        setCurrentFile(undefined);
+        setCurrentInvoice(null);
+        setPendingBankStatementFile(undefined);
+        setPendingExcelFile(undefined);
+        setToast({ show: true, message: "All files deleted", type: 'success' });
+    };
+
+    // Wrappers for Confirmation
+    const handleDeleteFile = (fileId?: string) => {
+        setDeleteConfirm({
+            show: true,
+            mode: 'single',
+            id: fileId,
+            title: "Delete File?",
+            message: "This will permanently remove the file and its data. Are you sure?"
+        });
+    };
+
+    const handleDeleteAllFiles = () => {
+        setDeleteConfirm({
+            show: true,
+            mode: 'all',
+            title: "Delete All Files?",
+            message: "WARNING: This will permanently delete ALL uploaded files and data. This action cannot be undone."
+        });
+    };
+
+    const handleConfirmDelete = () => {
+        if (!deleteConfirm) return;
+        if (deleteConfirm.mode === 'single') {
+            performDeleteFile(deleteConfirm.id);
+        } else {
+            performDeleteAllFiles();
+        }
+        setDeleteConfirm(null);
+    };
+
+    const handleCancelScan = () => {
+        isCancelledRef.current = true;
+        // Mark current processing file as Failed (Cancelled) to stop the spinner
+        if (currentFile) {
+            setProcessedFiles(prev => prev.map(f => f.file === currentFile ? { ...f, status: 'Failed', error: 'Processing Cancelled' } : f));
         }
     };
 
@@ -464,19 +647,39 @@ const App: React.FC = () => {
         if (!invoice.invoiceDate || !invoice.invoiceDate.trim()) return "Invoice Date is missing.";
 
         const isSales = invoice.voucherType === 'Sales';
+        // Fuzzy Match Helper
+        const target = invoice.targetCompany ? invoice.targetCompany.trim().toLowerCase() : '';
+
         if (isSales) {
             if (!invoice.buyerName || !invoice.buyerName.trim()) return "Buyer Name (Party) is missing.";
+            if (target) {
+                const supplier = invoice.supplierName ? invoice.supplierName.trim().toLowerCase() : '';
+                const match = target.includes(supplier) || supplier.includes(target);
+                if (!match) {
+                    return `Sales Mismatch: Your Company (${invoice.targetCompany}) must be the Supplier (found: ${invoice.supplierName}).`;
+                }
+            }
         } else {
+            // Purchase
             if (!invoice.supplierName || !invoice.supplierName.trim()) return "Supplier Name (Party) is missing.";
+            if (target) {
+                const buyer = invoice.buyerName ? invoice.buyerName.trim().toLowerCase() : '';
+                const match = target.includes(buyer) || buyer.includes(target);
+                if (!match) {
+                    return `Purchase Mismatch: Your Company (${invoice.targetCompany}) must be the Buyer (found: ${invoice.buyerName}).`;
+                }
+            }
         }
         return null;
     };
 
-    const performPush = async (invoice: InvoiceData, fileId?: string) => {
+    const performPush = async (invoice: InvoiceData, fileId?: string, skippedLedgers: string[] = []) => {
+        console.log("DEBUG: performPush called", { invoice, fileId, skippedLedgers });
         // 0. Strict Validation
         const validationError = validateInvoiceForPush(invoice);
         if (validationError) {
-            setToast({ show: true, message: validationError });
+            console.log("DEBUG: Validation Failed (App.tsx)", validationError);
+            setToast({ show: true, message: validationError, type: 'error' });
             if (fileId) {
                 setProcessedFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'Failed', error: validationError } : f));
             }
@@ -487,15 +690,16 @@ const App: React.FC = () => {
         if (invoice.invoiceNumber) {
             const exists = await checkInvoiceExists(invoice.invoiceNumber);
             if (exists) {
+                console.log("DEBUG: Invoice Duplicated");
                 // Show Summary Modal instead of Toast
                 setImportSummary({ total: 1, skipped: 1, success: 0, failed: 0 });
                 setSummaryModalOpen(true);
-                
+
                 // Still log internally but silent
                 const msg = `Skipped: Invoice ${invoice.invoiceNumber} already exists.`;
                 const log: LogEntry = {
-                    id: uuidv4(), timestamp: new Date(), method: 'POST', endpoint: TALLY_API_URL, 
-                    status: 'Failed', message: 'Duplicate Skipped', response: msg 
+                    id: uuidv4(), timestamp: new Date(), method: 'POST', endpoint: TALLY_API_URL,
+                    status: 'Failed', message: 'Duplicate Skipped', response: msg
                 };
                 setLogs(prev => [log, ...prev]);
                 saveLogToDB(log);
@@ -507,7 +711,7 @@ const App: React.FC = () => {
                             // This prevents "Success" -> "Failed" if user clicks push again.
                             if (f.status === 'Success') return f;
                             return { ...f, status: 'Failed', error: 'Duplicate Invoice Number' };
-                        } 
+                        }
                         return f;
                     }));
                 }
@@ -517,12 +721,14 @@ const App: React.FC = () => {
 
         // Pre-check Connection
         const status = await checkTallyConnection();
+        console.log("DEBUG: Tally Connection Status", status);
         if (!status.online) {
             setShowTallyDisconnectModal(true);
             return;
         }
 
         setIsPushing(true);
+        console.log("DEBUG: setIsPushing(true)");
         const newLogId = uuidv4();
         const pendingLog: LogEntry = {
             id: newLogId,
@@ -536,6 +742,9 @@ const App: React.FC = () => {
 
         try {
             const existingLedgers = await fetchExistingLedgers(invoice.targetCompany);
+            // Merge skipped ledgers so they are treated as "Existing" (i.e., Do Not Create)
+            skippedLedgers.forEach(l => existingLedgers.add(l));
+
             const xml = generateTallyXml(invoice, existingLedgers);
             const result = await pushToTally(xml);
 
@@ -562,36 +771,102 @@ const App: React.FC = () => {
             }
 
             // Show Summary Modal
-            setImportSummary({ 
-                total: 1, 
-                skipped: 0, 
-                success: result.success ? 1 : 0, 
+            setImportSummary({
+                total: 1,
+                skipped: 0,
+                success: result.success ? 1 : 0,
                 failed: result.success ? 0 : 1,
                 errors: result.success ? [] : [result.message]
             });
             setSummaryModalOpen(true);
 
         } catch (error: any) {
-            setIsPushing(false);
             // Show Failure in Modal
-            setImportSummary({ 
-                total: 1, 
-                skipped: 0, 
-                success: 0, 
+            setImportSummary({
+                total: 1,
+                skipped: 0,
+                success: 0,
                 failed: 1,
                 errors: [error.message || 'Unknown error occurred']
-             });
+            });
             setSummaryModalOpen(true);
         } finally {
             setIsPushing(false);
         }
     };
 
-    const handleEditorPush = async (data: InvoiceData) => {
+    const handleEditorPush = async (data: InvoiceData, skippedLedgers: string[] = []) => {
         handleSaveInvoice(data, false, true); // Silent save: No toasts
         // Find the file ID for the current file to update status
         const fileEntry = processedFiles.find(f => f.file === currentFile);
-        await performPush(data, fileEntry?.id);
+        await performPush(data, fileEntry?.id, skippedLedgers);
+    };
+
+    const performBulkPush = async (files: ProcessedFile[], skippedLedgers: string[]) => {
+        setIsPushing(true);
+        let skipped = 0;
+        let success = 0;
+        let failed = 0;
+
+        // Fetch Registry once
+        const allRegistry = await getInvoiceRegistry();
+        const existingNumbers = new Set(allRegistry.map(r => r.invoiceNumber.toLowerCase()));
+
+        const errors: string[] = [];
+        const skippedLedgersSet = new Set(skippedLedgers);
+
+        for (const file of files) {
+            if (isCancelledRef.current) break; // Check for cancellation
+
+            if (file.data && file.data.invoiceNumber) {
+                // Check duplicate
+                if (existingNumbers.has(file.data.invoiceNumber.toLowerCase())) {
+                    skipped++;
+                    setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Failed', error: 'Duplicate Invoice' } : f));
+                    continue;
+                }
+
+                try {
+                    // Push
+                    const existingLedgers = await fetchExistingLedgers(file.data.targetCompany);
+                    // Merge skipped ledgers to suppress creation logic in generateTallyXml
+                    skippedLedgers.forEach(l => existingLedgers.add(l));
+
+                    const xml = generateTallyXml(file.data, existingLedgers);
+                    const result = await pushToTally(xml);
+
+                    if (result.success) {
+                        success++;
+                        setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Success' } : f));
+                        saveInvoiceToDB(file.data, 'Success', file.id);
+                        saveInvoiceRegistry(file.data.invoiceNumber, 'OCR');
+                        existingNumbers.add(file.data.invoiceNumber.toLowerCase()); // Prevent internal duplicates
+                    } else {
+                        failed++;
+                        errors.push(`${file.data.invoiceNumber}: ${result.message}`);
+                        setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Failed', error: result.message } : f));
+                        saveInvoiceToDB(file.data, 'Failed', file.id);
+                    }
+                } catch (e: any) {
+                    failed++;
+                    errors.push(`${file.data.invoiceNumber}: ${e.message}`);
+                    setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Failed', error: e.message } : f));
+                }
+            } else {
+                failed++; // Missing data/invoice number
+                errors.push('Missing Invoice Number or Data');
+            }
+        }
+
+        setIsPushing(false);
+        setImportSummary({
+            total: files.length,
+            skipped,
+            success,
+            failed,
+            errors
+        });
+        setSummaryModalOpen(true);
     };
 
     const handleBulkPushToTally = async () => {
@@ -605,61 +880,89 @@ const App: React.FC = () => {
             return;
         }
 
-        setIsPushing(true);
-        let skipped = 0;
-        let success = 0;
-        let failed = 0;
+        setIsPushing(true); // Show loading while analyzing
 
-        // Fetch Registry once
-        const allRegistry = await getInvoiceRegistry();
-        const existingNumbers = new Set(allRegistry.map(r => r.invoiceNumber.toLowerCase()));
-        
-        const errors: string[] = [];
+        // 1. Analyze Missing Ledgers across ALL files
+        const uniqueMissingLedgers = new Set<string>();
+
+        // Cache fetched company ledgers to avoid re-fetching for same company
+        const companyLedgersCache: Record<string, Set<string>> = {};
 
         for (const file of readyFiles) {
-            if (file.data && file.data.invoiceNumber) {
-                // Check duplicate
-                if (existingNumbers.has(file.data.invoiceNumber.toLowerCase())) {
-                    skipped++;
-                    // Mark as Failed/Duplicate in UI
-                    setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Failed', error: 'Duplicate Invoice' } : f));
-                    continue;
-                }
+            if (!file.data) continue;
+            const company = file.data.targetCompany || ''; // Default if empty?
 
-                // Push
-                const existingLedgers = await fetchExistingLedgers(file.data.targetCompany);
-                const xml = generateTallyXml(file.data, existingLedgers);
-                const result = await pushToTally(xml);
-
-                if (result.success) {
-                    success++;
-                    setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Success' } : f));
-                    saveInvoiceToDB(file.data, 'Success', file.id);
-                    saveInvoiceRegistry(file.data.invoiceNumber, 'OCR');
-                    // Add to local set to prevent duplicate within same batch
-                    existingNumbers.add(file.data.invoiceNumber.toLowerCase());
-                } else {
-                    failed++;
-                    errors.push(`${file.data.invoiceNumber}: ${result.message}`);
-                    setProcessedFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'Failed', error: result.message } : f));
-                    saveInvoiceToDB(file.data, 'Failed', file.id);
+            let existing = companyLedgersCache[company];
+            if (!existing) {
+                try {
+                    existing = await fetchExistingLedgers(company);
+                    companyLedgersCache[company] = existing;
+                } catch (e) {
+                    console.error(`Failed to fetch ledgers for ${company}`, e);
+                    // Assume empty if fail? Or stop?
+                    // Continue, will likely fail later or try create all.
+                    existing = new Set();
                 }
-            } else {
-                failed++; // Missing data/invoice number
-                errors.push('Missing Invoice Number or Data');
             }
+
+            const missingInFile = getInvoiceLedgerRequirements(file.data, existing);
+            missingInFile.forEach(m => uniqueMissingLedgers.add(m));
         }
-        
-        setIsPushing(false);
-        setImportSummary({ 
-            total: readyFiles.length,
-            skipped,
-            success,
-            failed,
-            errors
-        });
-        setSummaryModalOpen(true);
+
+        setIsPushing(false); // Stop loading to show modal (if needed) or proceed
+
+        if (uniqueMissingLedgers.size > 0) {
+            setBulkProposedLedgers(Array.from(uniqueMissingLedgers));
+            setPendingBulkFiles(readyFiles);
+            setShowBulkLedgerModal(true);
+        } else {
+            performBulkPush(readyFiles, []);
+        }
     };
+
+    // Single Push from Dashboard
+    const handleSinglePush = async (file: ProcessedFile) => {
+        if (!file.data || file.sourceType !== 'OCR_INVOICE') return;
+
+        // Pre-check Connection
+        const status = await checkTallyConnection();
+        if (!status.online) {
+            setShowTallyDisconnectModal(true);
+            return;
+        }
+
+        setIsPushing(true);
+        // Check for missing ledgers
+        const company = file.data.targetCompany || '';
+        let existing = new Set<string>(); // default empty
+        try {
+            existing = await fetchExistingLedgers(company);
+        } catch (e) {
+            console.error(`Failed to fetch ledgers for ${company}`, e);
+        }
+
+        const missingInFile = getInvoiceLedgerRequirements(file.data, existing);
+
+        setIsPushing(false);
+
+        if (missingInFile.length > 0) {
+            // For single file, we can just use the bulk modal logic or a specific one.
+            // Let's reuse bulk modal for simplicity as it takes a list of ledgers
+            setBulkProposedLedgers(Array.from(missingInFile));
+            setPendingBulkFiles([file]); // Just one file in pending
+            setShowBulkLedgerModal(true);
+        } else {
+            // Direct Push
+            // performPush takes (invoice, fileId, skippedLedgers)
+            await performPush(file.data, file.id, []);
+        }
+    };
+
+    const handleConfirmBulkPush = (skippedLedgers: string[]) => {
+        setShowBulkLedgerModal(false);
+        performBulkPush(pendingBulkFiles, skippedLedgers);
+    };
+
 
     const handleDownload = (file: ProcessedFile) => {
         const dataToDownload = file.data || file.bankData || file.excelData;
@@ -699,7 +1002,7 @@ const App: React.FC = () => {
 
     const handleDownloadAll = () => {
         if (filteredFiles.length === 0) {
-            setToast({ show: true, message: "No files to download" });
+            setToast({ show: true, message: "No files to download", type: 'warning' });
             return;
         }
 
@@ -726,7 +1029,7 @@ const App: React.FC = () => {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        setToast({ show: true, message: `Exported ${filteredFiles.length} files` });
+        setToast({ show: true, message: `Exported ${filteredFiles.length} files`, type: 'success' });
     };
 
     const handleLock = () => {
@@ -736,25 +1039,33 @@ const App: React.FC = () => {
     const filteredFiles = processedFiles.filter(f => {
         const term = searchTerm.toLowerCase().trim();
         let matchesSearch = f.fileName.toLowerCase().includes(term);
-        if (!matchesSearch && f.data) {
-            matchesSearch = (
-                (f.data.invoiceNumber || '').toLowerCase().includes(term) ||
-                (f.data.supplierName || '').toLowerCase().includes(term)
-            );
+
+        // Search inside structured data if filename doesn't match
+        if (!matchesSearch) {
+            if (f.data) {
+                matchesSearch = (
+                    (f.data.invoiceNumber || '').toLowerCase().includes(term) ||
+                    (f.data.supplierName || '').toLowerCase().includes(term) ||
+                    (f.data.buyerName || '').toLowerCase().includes(term)
+                );
+            } else if (f.bankData) {
+                matchesSearch = (
+                    (f.bankData.bankName || '').toLowerCase().includes(term) ||
+                    (f.bankData.accountNumber || '').toLowerCase().includes(term)
+                );
+            }
         }
+
         let matchesFilter = false;
         if (filterStatus === 'All') matchesFilter = true;
         else if (['Success', 'Ready', 'Failed', 'Processing'].includes(filterStatus)) matchesFilter = f.status === filterStatus;
-        else if (['Invoices', 'Bank', 'Excel'].includes(filterStatus)) {
-            if (filterStatus === 'Invoices') matchesFilter = f.sourceType === 'OCR_INVOICE';
-            if (filterStatus === 'Bank') matchesFilter = f.sourceType === 'BANK_STATEMENT';
-            if (filterStatus === 'Excel') matchesFilter = f.sourceType === 'EXCEL_IMPORT';
-        }
         else {
+            if (filterStatus === 'Invoices') matchesFilter = f.sourceType === 'OCR_INVOICE';
+            if (filterStatus === 'Bank' || filterStatus === 'Bank Statement') matchesFilter = f.sourceType === 'BANK_STATEMENT';
+            if (filterStatus === 'Excel') matchesFilter = f.sourceType === 'EXCEL_IMPORT';
+
             if (filterStatus === 'Sales') matchesFilter = f.sourceType === 'OCR_INVOICE' && f.data?.voucherType === 'Sales';
             if (filterStatus === 'Purchase') matchesFilter = f.sourceType === 'OCR_INVOICE' && f.data?.voucherType === 'Purchase';
-            if (filterStatus === 'Bank Statement') matchesFilter = f.sourceType === 'BANK_STATEMENT';
-            if (filterStatus === 'Excel') matchesFilter = f.sourceType === 'EXCEL_IMPORT';
         }
         return matchesSearch && matchesFilter;
     });
@@ -777,21 +1088,17 @@ const App: React.FC = () => {
                 filterStatus={filterStatus}
                 onFilterChange={setFilterStatus}
                 onDownloadAll={handleDownloadAll}
+                onDelete={handleDeleteFile}
+                onDeleteAll={handleDeleteAllFiles}
+                onPush={handleSinglePush}
             />
         );
         if (currentView === AppView.UPLOAD) return (
             <InvoiceUpload
                 autoTrigger={shouldAutoTriggerUpload}
                 onAutoTriggered={() => setShouldAutoTriggerUpload(false)}
-                onFilesSelected={(files) => {
-                    handleBulkUpload(files);
-                    if (files.length > 0) {
-                        setCurrentFile(files[0]);
-                        setCurrentInvoice(null);
-                        setCurrentView(AppView.EDITOR);
-                    }
-                    else setCurrentView(AppView.DASHBOARD);
-                }}
+                onFilesSelected={(files) => handleBulkUpload(files)}
+                onWarning={(msg) => setToast({ show: true, message: msg, type: 'warning' })}
                 onRestoreDraft={(data) => {
                     handleSaveInvoice(data, false); setActiveTab('editor'); setCurrentView(AppView.EDITOR);
                     setToast({ show: true, message: "Draft restored" });
@@ -873,6 +1180,7 @@ const App: React.FC = () => {
                             onSave={handleSaveInvoice}
                             onPush={handleEditorPush}
                             onDelete={handleDeleteFile}
+                            onDeleteAll={handleDeleteAllFiles}
                             onAddFile={handleAddFile}
                             onAddFiles={handleAddFilesFromEditor}
                             isPushing={isPushing}
@@ -880,19 +1188,28 @@ const App: React.FC = () => {
                             currentIndex={currentIndex} totalCount={totalInvoices}
                             onNext={() => handleNavigateInvoice('next')} onPrev={() => handleNavigateInvoice('prev')}
                             hasNext={currentIndex < processedFiles.length - 1} hasPrev={currentIndex > 0}
+                            onCancelScan={handleCancelScan}
+                            companies={companies}
+                            loadCompanies={loadCompanies}
+                            loadingCompanies={loadingCompanies}
+                            onPushAll={handleBulkPushToTally}
                         />
                     </div>
                 </div>
             );
         }
-        if (currentView === AppView.BANK_STATEMENT) return (
-            <BankStatementManager
-                onPushLog={handlePushLog} externalFile={pendingBankStatementFile} externalData={processedFiles.find(f => f.sourceType === 'BANK_STATEMENT' && f.bankData)?.bankData || null} onRedirectToInvoice={handleRedirectToInvoice}
-                onRegisterFile={(f) => handleRegisterFile(f, 'BANK_STATEMENT')}
-                onUpdateFile={handleUpdateFile}
-                onDelete={handleDeleteFile}
-            />
-        );
+        if (currentView === AppView.BANK_STATEMENT) {
+            const bankFileEntry = processedFiles.find(f => f.file === pendingBankStatementFile) || processedFiles.find(f => f.sourceType === 'BANK_STATEMENT');
+            return (
+                <BankStatementManager
+                    key={pendingBankStatementFile ? pendingBankStatementFile.name : 'bank-empty'}
+                    onPushLog={handlePushLog} externalFile={pendingBankStatementFile} externalData={bankFileEntry?.bankData || null} onRedirectToInvoice={handleRedirectToInvoice}
+                    onRegisterFile={(f) => handleRegisterFile(f, 'BANK_STATEMENT')}
+                    onUpdateFile={handleUpdateFile}
+                    onDelete={(id) => handleDeleteFile(id || bankFileEntry?.id)}
+                />
+            );
+        }
         if (currentView === AppView.EXCEL_IMPORT) {
             // Use the pending Excel file or find one with data
             const excelFile = pendingExcelFile || processedFiles.find(f => f.sourceType === 'EXCEL_IMPORT' && f.excelData);
@@ -905,7 +1222,22 @@ const App: React.FC = () => {
                     externalFileId={excelFile?.id || null}
                     externalMappedData={excelFile?.excelData || null}
                     externalMapping={excelFile?.excelMapping || null}
-                    onDelete={handleDeleteFile}
+                    onDelete={() => excelFile ? handleDeleteFile(excelFile.id) : undefined}
+                />
+            );
+        }
+        if (currentView === AppView.BULK_PROCESSING) {
+            if (!pendingBulkBatch) return null;
+            const batchFiles = processedFiles.filter(f => pendingBulkBatch.ids.includes(f.id));
+            const completedCount = batchFiles.filter(f => f.status !== 'Pending' && f.status !== 'Processing').length;
+            const current = batchFiles.find(f => f.status === 'Processing') || batchFiles.find(f => f.status === 'Pending') || batchFiles[batchFiles.length - 1];
+
+            return (
+                <BulkProcessLoader
+                    total={pendingBulkBatch.total}
+                    processed={completedCount}
+                    currentFileName={current?.fileName || 'Finalizing...'}
+                    onCancel={handleCancelBulkProcessing}
                 />
             );
         }
@@ -925,7 +1257,14 @@ const App: React.FC = () => {
     }
 
     return (
-        <div className="flex flex-col h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans transition-colors duration-200 relative">
+        <div className={`flex flex-col h-screen overflow-hidden transition-colors duration-200 ${darkMode ? 'dark bg-slate-900' : 'bg-slate-50'}`}
+            style={{
+                transform: 'scale(0.9)',
+                transformOrigin: 'top left',
+                width: '111.12vw',
+                height: '111.12vh'
+            }}
+        >
             {isSettingsOpen && (
                 <SettingsModal
                     onClose={() => setIsSettingsOpen(false)}
@@ -936,13 +1275,30 @@ const App: React.FC = () => {
             {showTallyDisconnectModal && (
                 <TallyDisconnectedModal onClose={() => setShowTallyDisconnectModal(false)} />
             )}
-            <ImportSummaryModal 
+            <ImportSummaryModal
                 isOpen={summaryModalOpen}
                 onClose={() => setSummaryModalOpen(false)}
                 summary={importSummary}
             />
             {invalidFileAlert.show && <InvalidFileModal fileName={invalidFileAlert.fileName} reason={invalidFileAlert.reason} onClose={() => setInvalidFileAlert({ show: false, fileName: '', reason: '' })} />}
+            <BulkLedgerCreationModal
+                isOpen={showBulkLedgerModal}
+                onClose={() => setShowBulkLedgerModal(false)}
+                proposedLedgers={bulkProposedLedgers}
+                onConfirm={handleConfirmBulkPush}
+            />
+            {deleteConfirm && (
+                <DeleteConfirmationModal
+                    isOpen={deleteConfirm.show}
+                    onClose={() => setDeleteConfirm(null)}
+                    onConfirm={handleConfirmDelete}
+                    title={deleteConfirm.title}
+                    message={deleteConfirm.message}
+                    isDeleteAll={deleteConfirm.mode === 'all'}
+                />
+            )}
             {mismatchedFileAlert.show && mismatchedFileAlert.file && (
+
                 <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">
                     <div className="bg-white dark:bg-slate-800 p-8 rounded-xl shadow-2xl border-2 border-orange-400 max-w-md w-full text-center relative">
                         <div className="w-16 h-16 bg-orange-100 dark:bg-orange-900/30 text-orange-600 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -960,8 +1316,6 @@ const App: React.FC = () => {
                                 onClick={handleSwitchToBankStatement}
                                 className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md transition-all flex items-center justify-center gap-2"
                             >
-                                <ArrowRight className="w-4 h-4" />
-                                Move to Bank Statement
                             </button>
                             <button
                                 onClick={() => setMismatchedFileAlert({ show: false, file: null })}
@@ -975,20 +1329,64 @@ const App: React.FC = () => {
             )}
 
             <Navbar
-                currentView={currentView} onChangeView={setCurrentView} darkMode={darkMode} toggleDarkMode={() => setDarkMode(!darkMode)}
+                currentView={currentView}
+                onChangeView={(view) => {
+                    if (view === AppView.EDITOR && pendingBulkBatch) {
+                        setCurrentView(AppView.BULK_PROCESSING);
+                    } else {
+                        setCurrentView(view);
+                    }
+                }}
+                darkMode={darkMode} toggleDarkMode={() => setDarkMode(!darkMode)}
                 tallyStatus={tallyStatus} onCheckStatus={checkStatus} searchTerm={searchTerm} onSearchChange={setSearchTerm} onOpenSettings={() => setIsSettingsOpen(true)}
                 onLock={handleLock}
             />
+            {/* Main Content Area */}
             <main className="flex-1 overflow-auto relative p-6">
-                {renderContent()}
-                {toast.show && (
-                    <div className="fixed bottom-6 right-6 z-[100] animate-fade-in bg-white dark:bg-slate-800 border-l-4 border-green-500 shadow-xl rounded-lg p-4 flex items-center gap-3 pr-8 min-w-[300px]">
-                        <CheckCircle2 className="w-5 h-5 text-green-500" />
-                        <div><h4 className="font-bold text-sm">Success</h4><p className="text-xs text-slate-500">{toast.message}</p></div>
-                        <button onClick={() => setToast({ show: false, message: '' })} className="absolute top-2 right-2"><X className="w-3 h-3" /></button>
-                    </div>
-                )}
+                {/* Global View Transition Wrapper */}
+                <div key={currentView} className="w-full h-full animate-fade-in relative">
+                    {renderContent()}
+                </div>
             </main>
+            {/* Password Modal */}
+            <PasswordInputModal 
+                isOpen={showPasswordModal}
+                fileName={pendingPasswordFile?.fileName || 'Document'}
+                onSubmit={(password) => {
+                    if (pendingPasswordFile) {
+                        setShowPasswordModal(false);
+                        setProcessedFiles(prev => prev.map(f => f.id === pendingPasswordFile.id ? { ...f, status: 'Processing' } : f));
+                        processSingleFile(pendingPasswordFile, 0, password); // Retry with password
+                        setPendingPasswordFile(null);
+                    }
+                }}
+                onCancel={() => {
+                    setShowPasswordModal(false);
+                    if (pendingPasswordFile) {
+                         setProcessedFiles(prev => prev.map(f => f.id === pendingPasswordFile.id ? { ...f, status: 'Failed', error: 'Password Cancelled' } : f));
+                    }
+                    setPendingPasswordFile(null);
+                }}
+            />
+
+            {toast.show && (
+                <div className={`fixed bottom-6 right-6 z-[100] animate-fade-in bg-white dark:bg-slate-800 border-l-4 shadow-xl rounded-lg p-4 flex items-center gap-3 pr-8 min-w-[300px]
+                        ${toast.type === 'success' ? 'border-green-500' : toast.type === 'error' ? 'border-red-500' : 'border-orange-500'}`}>
+                    {toast.type === 'success' && <CheckCircle2 className="w-5 h-5 text-green-500" />}
+                    {toast.type === 'error' && <AlertTriangle className="w-5 h-5 text-red-500" />}
+                    {toast.type === 'warning' && <AlertTriangle className="w-5 h-5 text-orange-500" />}
+                    <div>
+                        <h4 className="font-bold text-sm text-slate-900 dark:text-white">
+                            {toast.type === 'success' ? 'Success' : toast.type === 'error' ? 'Error' : 'Warning'}
+                        </h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">{toast.message}</p>
+                    </div>
+                    <button onClick={() => setToast(prev => ({ ...prev, show: false }))} className="absolute top-2 right-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                        <X className="w-3 h-3" />
+                    </button>
+                </div>
+            )}
+
         </div>
     );
 };

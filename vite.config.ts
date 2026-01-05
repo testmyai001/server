@@ -34,6 +34,20 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@': path.resolve('.'),
       }
+    },
+    build: {
+      outDir: 'dist',
+      sourcemap: false,
+      chunkSizeWarningLimit: 1000,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            vendor: ['react', 'react-dom'],
+            xlsx: ['xlsx', 'exceljs'],
+            ui: ['lucide-react', 'recharts']
+          }
+        }
+      }
     }
   };
 });
