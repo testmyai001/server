@@ -84,7 +84,7 @@ def load_token_usage() -> dict:
     """Load token usage from JSON file"""
     default = {
         "used": 0,
-        "plan": "Bronze",
+        "plan": "Platinum",
         "reset_date": None,
         "last_notified_threshold": 0
     }
