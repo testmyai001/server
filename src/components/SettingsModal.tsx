@@ -248,7 +248,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                             <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-2 block">Change Plan</label>
                             <div className="grid grid-cols-3 gap-2">
                                 {(['Bronze', 'Gold', 'Platinum'] as const).map((plan) => {
-                                    const limits = { Bronze: 1000, Gold: 5000, Platinum: 10000 };
+                                    const limits = { Bronze: 50000, Gold: 100000, Platinum: 200000 };
                                     const Icon = plan === 'Bronze' ? Medal : plan === 'Gold' ? Award : Crown;
                                     const isActive = tokenData?.plan === plan;
                                     return (
@@ -263,7 +263,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                                         >
                                             <Icon className="w-4 h-4" />
                                             <span>{plan}</span>
-                                            <span className="text-[10px] opacity-70">{limits[plan]} tokens</span>
+                                            <span className="text-[10px] opacity-70">{(limits[plan] / 1000).toLocaleString()}K tokens</span>
                                         </button>
                                     );
                                 })}
