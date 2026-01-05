@@ -30,7 +30,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
     // Token Management State
     const [tokenData, setTokenData] = useState<TokenUsageData | null>(null);
     const [resetTokensConfirm, setResetTokensConfirm] = useState(false);
-    const [isUpdatingPlan, setIsUpdatingPlan] = useState(false);
 
     useEffect(() => {
         // Initialize with current values
@@ -107,25 +106,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
     };
 
     const handleChangePlan = async (plan: 'Bronze' | 'Gold' | 'Platinum') => {
-        if (isUpdatingPlan) return;
-
-        setIsUpdatingPlan(true);
-        try {
-            const success = await setPlan(BACKEND_API_KEY, plan);
-            if (success) {
-                const usage = await getTokenUsage(BACKEND_API_KEY);
-                if (usage) {
-                    setTokenData(usage);
-                }
-                alert(`Successfully changed plan to ${plan}`);
-            } else {
-                alert("Failed to update plan. Please check backend connection and API key.");
+        const success = await setPlan(BACKEND_API_KEY, plan);
+        if (success) {
+            const usage = await getTokenUsage(BACKEND_API_KEY);
+            if (usage) {
+                setTokenData(usage);
             }
-        } catch (error) {
-            console.error("Plan change error:", error);
-            alert("An error occurred while changing the plan.");
-        } finally {
-            setIsUpdatingPlan(false);
         }
     };
 
@@ -235,7 +221,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                     {/* Token Management */}
                     <div>
                         <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Token Management</h4>
-
+                        
                         {/* Current Plan Display */}
                         {tokenData && (
                             <div className="mb-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-700">
@@ -249,7 +235,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                                     <span className="text-xs text-slate-500">{tokenData.used} / {tokenData.limit}</span>
                                 </div>
                                 <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
-                                    <div
+                                    <div 
                                         className={`h-2 rounded-full transition-all ${tokenData.percentage >= 75 ? 'bg-red-500' : tokenData.percentage >= 50 ? 'bg-orange-500' : 'bg-emerald-500'}`}
                                         style={{ width: `${Math.min(tokenData.percentage, 100)}%` }}
                                     />
@@ -269,13 +255,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                                         <button
                                             key={plan}
                                             onClick={() => handleChangePlan(plan)}
-                                            disabled={isUpdatingPlan}
-                                            className={`p-3 rounded-lg text-xs font-bold transition-all flex flex-col items-center gap-1 ${isActive
+                                            className={`p-3 rounded-lg text-xs font-bold transition-all flex flex-col items-center gap-1 ${
+                                                isActive
                                                     ? 'bg-indigo-600 text-white border-2 border-indigo-500'
                                                     : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700'
-                                                } ${isUpdatingPlan ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                            }`}
                                         >
-                                            <Icon className={`w-4 h-4 ${isUpdatingPlan && isActive ? 'animate-spin' : ''}`} />
+                                            <Icon className="w-4 h-4" />
                                             <span>{plan}</span>
                                             <span className="text-[10px] opacity-70">{limits[plan]} tokens</span>
                                         </button>
@@ -297,10 +283,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                             </div>
                             <button
                                 onClick={handleResetTokens}
-                                className={`w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${resetTokensConfirm
+                                className={`w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                                    resetTokensConfirm
                                         ? 'bg-orange-600 text-white hover:bg-orange-700 shadow-md'
                                         : 'bg-white dark:bg-slate-800 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800 hover:bg-orange-50 dark:hover:bg-orange-900/20'
-                                    }`}
+                                }`}
                             >
                                 <RefreshCw className="w-4 h-4" />
                                 {resetTokensConfirm ? 'Click again to confirm' : 'Reset Token Usage'}
@@ -387,8 +374,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                                 <button
                                     onClick={handleDeleteInvoices}
                                     className={`px-3 py-1.5 text-xs font-bold transition-all rounded-lg flex items-center gap-1 ${confirmDeleteInvoices
-                                        ? 'bg-red-600 text-white'
-                                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700'
+                                            ? 'bg-red-600 text-white'
+                                            : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700'
                                         }`}
                                 >
                                     <RefreshCw className="w-3 h-3" />

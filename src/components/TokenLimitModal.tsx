@@ -70,13 +70,7 @@ const TokenLimitModal: React.FC<TokenLimitModalProps> = ({ isOpen, onClose, onOp
 
                     {/* Options */}
                     <div className="space-y-3">
-                        <button 
-                            onClick={() => {
-                                onClose();
-                                onOpenSettings();
-                            }}
-                            className="w-full flex items-start gap-3 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors text-left"
-                        >
+                        <div className="flex items-start gap-3 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-200 dark:border-indigo-800">
                             <Crown className="w-5 h-5 text-indigo-600 dark:text-indigo-400 mt-0.5" />
                             <div className="flex-1">
                                 <p className="font-bold text-indigo-900 dark:text-indigo-300 text-sm">Upgrade Your Plan</p>
@@ -84,7 +78,7 @@ const TokenLimitModal: React.FC<TokenLimitModalProps> = ({ isOpen, onClose, onOp
                                     Get more tokens monthly by upgrading to Gold (100,000) or Platinum (200,000)
                                 </p>
                             </div>
-                        </button>
+                        </div>
 
                         <div className="flex items-start gap-3 p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-xl border border-emerald-200 dark:border-emerald-800">
                             <Settings className="w-5 h-5 text-emerald-600 dark:text-emerald-400 mt-0.5" />
