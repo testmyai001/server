@@ -144,64 +144,64 @@ export const analyzeLedgerRequirements = (vouchers: ExcelVoucher[], existingLedg
 };
 
 export const getInvoiceLedgerRequirements = (invoice: InvoiceData, existingLedgers: Set<string>): string[] => {
-    const missing: string[] = [];
-    
-    // 1. Party Ledger
-    const voucherType = invoice.voucherType || 'Purchase';
-    const isSales = voucherType === 'Sales';
-    const rawPartyName = isSales ? invoice.buyerName : invoice.supplierName;
-    const partyName = cleanName(rawPartyName || "Cash Party");
-    
-    if (!existingLedgers.has(partyName)) {
-        missing.push(partyName);
+  const missing: string[] = [];
+
+  // 1. Party Ledger
+  const voucherType = invoice.voucherType || 'Purchase';
+  const isSales = voucherType === 'Sales';
+  const rawPartyName = isSales ? invoice.buyerName : invoice.supplierName;
+  const partyName = cleanName(rawPartyName || "Cash Party");
+
+  if (!existingLedgers.has(partyName)) {
+    missing.push(partyName);
+  }
+
+  // 2. Tax Ledgers
+  const uniqueRates = new Set<number>();
+  invoice.lineItems.forEach(item => uniqueRates.add(Number(item.gstRate) || 0));
+
+  uniqueRates.forEach(rate => {
+    // Sales/Purchase Ledger
+    // Note: generateTallyXml uses logic: "Sale 18%" or "Purchase 18%"
+    // We must match that exact logic or pass mappings.
+    // Assuming default logic for simplicity of "Missing Check"
+    // If mappings exist, `generateTallyXml` uses them.
+    // BUT here we don't have mappings passed in easily?
+    // `App.tsx` doesn't pass mappings to `generateTallyXml`?
+    // Let's check `generateTallyXml`.
+    // It consumes `invoice.lineItems[].ledgerName` which is mapped in `InvoiceEditor`.
+    // So we should verify THOSE names.
+  });
+
+  // Actually, `InvoiceEditor` maps ledgers and puts them in `lineItems`.
+  // So we just need to check `item.ledgerName`.
+
+  invoice.lineItems.forEach(item => {
+    if (item.ledgerName && !existingLedgers.has(item.ledgerName)) {
+      if (!missing.includes(item.ledgerName)) missing.push(item.ledgerName);
     }
+  });
 
-    // 2. Tax Ledgers
-    const uniqueRates = new Set<number>();
-    invoice.lineItems.forEach(item => uniqueRates.add(Number(item.gstRate) || 0));
+  // 3. Tax Duties (IGST, CGST, SGST)
+  // `generateTallyXml` logic is complex for names (lines 735+).
+  // It blindly generates "Output IGST 18%" etc.
+  // We need to replicate that naming to check existence.
 
-    uniqueRates.forEach(rate => {
-        // Sales/Purchase Ledger
-        // Note: generateTallyXml uses logic: "Sale 18%" or "Purchase 18%"
-        // We must match that exact logic or pass mappings.
-        // Assuming default logic for simplicity of "Missing Check"
-        // If mappings exist, `generateTallyXml` uses them.
-        // BUT here we don't have mappings passed in easily?
-        // `App.tsx` doesn't pass mappings to `generateTallyXml`?
-        // Let's check `generateTallyXml`.
-        // It consumes `invoice.lineItems[].ledgerName` which is mapped in `InvoiceEditor`.
-        // So we should verify THOSE names.
-    });
+  uniqueRates.forEach(rate => {
+    if (rate > 0) {
+      const igstName = `${isSales ? 'Output' : 'Input'} IGST ${formatRate(rate)}%`;
+      if (!existingLedgers.has(igstName) && !missing.includes(igstName)) missing.push(igstName);
 
-    // Actually, `InvoiceEditor` maps ledgers and puts them in `lineItems`.
-    // So we just need to check `item.ledgerName`.
-    
-    invoice.lineItems.forEach(item => {
-        if (item.ledgerName && !existingLedgers.has(item.ledgerName)) {
-            if (!missing.includes(item.ledgerName)) missing.push(item.ledgerName);
-        }
-    });
+      const half = rate / 2;
+      const cgstName = `${isSales ? 'Output' : 'Input'} CGST ${formatRate(half)}%`;
+      const sgstName = `${isSales ? 'Output' : 'Input'} SGST ${formatRate(half)}%`;
 
-    // 3. Tax Duties (IGST, CGST, SGST)
-    // `generateTallyXml` logic is complex for names (lines 735+).
-    // It blindly generates "Output IGST 18%" etc.
-    // We need to replicate that naming to check existence.
-    
-    uniqueRates.forEach(rate => {
-        if (rate > 0) {
-            const igstName = `${isSales ? 'Output' : 'Input'} IGST ${formatRate(rate)}%`;
-            if (!existingLedgers.has(igstName) && !missing.includes(igstName)) missing.push(igstName);
+      if (!existingLedgers.has(cgstName) && !missing.includes(cgstName)) missing.push(cgstName);
+      if (!existingLedgers.has(sgstName) && !missing.includes(sgstName)) missing.push(sgstName);
+    }
+  });
 
-            const half = rate / 2;
-            const cgstName = `${isSales ? 'Output' : 'Input'} CGST ${formatRate(half)}%`;
-            const sgstName = `${isSales ? 'Output' : 'Input'} SGST ${formatRate(half)}%`;
-            
-            if (!existingLedgers.has(cgstName) && !missing.includes(cgstName)) missing.push(cgstName);
-            if (!existingLedgers.has(sgstName) && !missing.includes(sgstName)) missing.push(sgstName);
-        }
-    });
-
-    return missing.sort();
+  return missing.sort();
 };
 
 // --- STRICT LEDGER MATCHING HELPER ---
@@ -215,7 +215,7 @@ export const findLedgerByTypeAndPercent = (
 
   for (const ledger of tallyLedgers) {
     const name = ledger.toLowerCase();
-    
+
     // 1. Must contain the type (purchase/sales)
     if (!name.includes(typeKey)) continue;
 
@@ -256,10 +256,11 @@ export const checkTallyConnection = async (): Promise<{ online: boolean; info: s
 
 // --- BANK XML GENERATION ---
 export const generateBankStatementXml = (
-  data: BankStatementData, 
+  data: BankStatementData,
   bankLedgerName: string,
-  targetCompany: string, 
-  ledgerMappings: Record<string, string> = {}
+  targetCompany: string,
+  ledgerMappings: Record<string, string> = {},
+  userName: string = ''
 ): string => {
   const svCompany = targetCompany ? esc(targetCompany) : '##SVCurrentCompany';
   const cleanBankName = esc(bankLedgerName);
@@ -289,10 +290,10 @@ export const generateBankStatementXml = (
     const amount = txn.voucherType === 'Payment' ? txn.withdrawal : txn.deposit;
     const originalContra = txn.contraLedger;
     const mappedContra = ledgerMappings[originalContra] || originalContra;
-    
+
     // Fallback: If still unknown/empty, use Suspense but valid XML requires something.
     const finalContra = mappedContra || 'Suspense A/c';
-    
+
     const narration = esc(txn.description);
     const isPayment = txn.voucherType === 'Payment';
 
@@ -308,7 +309,7 @@ export const generateBankStatementXml = (
     <TALLYMESSAGE xmlns:UDF="TallyUDF">
       <VOUCHER VCHTYPE="${txn.voucherType}" ACTION="Create" OBJVIEW="Accounting Voucher View">
         <DATE>${dateXml}</DATE>
-        <NARRATION>${narration}</NARRATION>
+        <NARRATION>${narration} (Generated by AutoTallyAI${userName ? ' - ' + userName : ''} - ${new Date().toLocaleString()})</NARRATION>
         <VOUCHERTYPENAME>${txn.voucherType}</VOUCHERTYPENAME>
         <VOUCHERNUMBER>${uuidv4().substring(0, 8)}</VOUCHERNUMBER>
         <FBTPAYMENTTYPE>Default</FBTPAYMENTTYPE>
@@ -360,10 +361,17 @@ export const generateBankStatementXml = (
 };
 
 // --- BULK EXCEL XML GENERATION ---
-export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: Set<string>, targetCompany: string, ledgerMappings: Record<string, string> = {}): string => {
+export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: Set<string>, targetCompany: string, ledgerMappings: Record<string, string> = {}, userName: string = ''): string => {
   let mastersXml = '';
   let vouchersXml = '';
   const svCompany = targetCompany ? esc(targetCompany) : '##SVCurrentCompany';
+
+  // Generate base narration string (Unified format with Invoice Upload)
+  const now = new Date();
+  const narrationDate = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }).replace(/ /g, '-');
+  const narrationTime = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  const userPart = userName ? ` by ${userName}` : '';
+  const baseNarration = `Generated by AutoTally AI${userPart} On ${narrationDate} ${narrationTime}`;
 
   // 1. Process Masters
   vouchers.forEach(voucher => {
@@ -667,12 +675,30 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
     const partyTotal = round(actualItemTotal + actualTaxTotal + actualRoundOff);
     const partyAmountStr = isSales ? `-${partyTotal.toFixed(2)}` : `${partyTotal.toFixed(2)}`;
 
+    let finalNarration = '';
+    if (voucher.voucherType === 'Sales') {
+      // Sales Format: Return Period Receiver Name GSTIN POS Invoice Type Invoice No Invoice Date [Base Narration]
+      const details = [
+        voucher.period,
+        voucher.partyName,
+        voucher.gstin,
+        voucher.placeOfSupply,
+        voucher.voucherType,
+        voucher.invoiceNo,
+        voucher.date
+      ].filter(Boolean).join(' '); // Join with space, filter out empty fields
+      finalNarration = `${details} ${baseNarration}`;
+    } else {
+      // Purchase Format: Being as per GSTR-2A [Base Narration]
+      finalNarration = `Being as per GSTR-2A ${baseNarration}`;
+    }
+
     vouchersXml += `
         <TALLYMESSAGE xmlns:UDF="TallyUDF">
             <VOUCHER VCHTYPE="${voucher.voucherType}" ACTION="Create" OBJVIEW="Accounting Voucher View">
                 <DATE>${dateXml}</DATE>
                 <EFFECTIVEDATE>${dateXml}</EFFECTIVEDATE>
-                <NARRATION>${isSales ? 'GSTR1' : 'GSTR2A'}</NARRATION>
+                <NARRATION>${finalNarration}</NARRATION>
                 <VOUCHERTYPENAME>${voucher.voucherType}</VOUCHERTYPENAME>
                 <VOUCHERNUMBER>${esc(voucher.invoiceNo)}</VOUCHERNUMBER>
                 <REFERENCE>${esc(voucher.invoiceNo)}</REFERENCE>
@@ -739,7 +765,7 @@ export const generateBulkExcelXml = (vouchers: ExcelVoucher[], createdMasters: S
 };
 
 // --- INVOICE XML GENERATION ---
-export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string> = new Set()): string => {
+export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string> = new Set(), userName: string = ''): string => {
   // Fallback: Default to 'Purchase' if voucherType is undefined
   const voucherType = data.voucherType || 'Purchase';
   const isSales = voucherType === 'Sales';
@@ -895,7 +921,14 @@ export const generateTallyXml = (data: InvoiceData, existingLedgers: Set<string>
   const finalPartyTotal = round(actualItemTotal + actualTaxTotal + actualRoundOff);
   const partyAmountStr = `${(finalPartyTotal * partySign).toFixed(2)}`;
 
-  return `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>All Masters</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA>${mastersXml}</REQUESTDATA></IMPORTDATA><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA><TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER REMOTEID="${remoteId}" VCHKEY="${vchKey}" VCHTYPE="${voucherType}" ACTION="Create" OBJVIEW="Invoice Voucher View"><OLDAUDITENTRYIDS.LIST TYPE="Number"><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST><DATE>${dateXml}</DATE><EFFECTIVEDATE>${dateXml}</EFFECTIVEDATE><REFERENCEDATE>${dateXml}</REFERENCEDATE><VCHSTATUSDATE>${dateXml}</VCHSTATUSDATE><GUID>${guid}</GUID><VOUCHERTYPENAME>${voucherType}</VOUCHERTYPENAME><PARTYLEDGERNAME>${esc(partyName)}</PARTYLEDGERNAME><PARTYNAME>${esc(partyName)}</PARTYNAME><ADDRESS.LIST><ADDRESS>${esc(partyAddress)}</ADDRESS></ADDRESS.LIST><STATENAME>${esc(partyState)}</STATENAME><COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE><PARTYGSTIN>${esc(partyGstin)}</PARTYGSTIN><PLACEOFSUPPLY>${esc(partyState)}</PLACEOFSUPPLY><VOUCHERNUMBER>${esc(data.invoiceNumber)}</VOUCHERNUMBER><REFERENCE>${esc(data.invoiceNumber)}</REFERENCE><BASICBUYERNAME>${esc(buyerName)}</BASICBUYERNAME><ISINVOICE>Yes</ISINVOICE><NARRATION>Invoice No: ${esc(data.invoiceNumber)} | Date: ${esc(data.invoiceDate)} | Generated by AutoTally AI</NARRATION><LEDGERENTRIES.LIST><LEDGERNAME>${esc(partyName)}</LEDGERNAME><ISDEEMEDPOSITIVE>${partyDeemedPos}</ISDEEMEDPOSITIVE><ISPARTYLEDGER>Yes</ISPARTYLEDGER><AMOUNT>${partyAmountStr}</AMOUNT><BILLALLOCATIONS.LIST><NAME>${esc(data.invoiceNumber)}</NAME><BILLTYPE>New Ref</BILLTYPE><AMOUNT>${partyAmountStr}</AMOUNT></BILLALLOCATIONS.LIST></LEDGERENTRIES.LIST>${inventoryXml}${taxLedgersXml}</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`;
+  // Generate narration with username and timestamp
+  const now = new Date();
+  const narrationDate = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }).replace(/ /g, '-');
+  const narrationTime = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  const userPart = userName ? ` by ${userName}` : '';
+  const narration = `Generated by AutoTally AI${userPart} On ${narrationDate} ${narrationTime}`;
+
+  return `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDESC><REPORTNAME>All Masters</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA>${mastersXml}</REQUESTDATA></IMPORTDATA><IMPORTDATA><REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES><SVCURRENTCOMPANY>${svCompany}</SVCURRENTCOMPANY></STATICVARIABLES></REQUESTDESC><REQUESTDATA><TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER REMOTEID="${remoteId}" VCHKEY="${vchKey}" VCHTYPE="${voucherType}" ACTION="Create" OBJVIEW="Invoice Voucher View"><OLDAUDITENTRYIDS.LIST TYPE="Number"><OLDAUDITENTRYIDS>-1</OLDAUDITENTRYIDS></OLDAUDITENTRYIDS.LIST><DATE>${dateXml}</DATE><EFFECTIVEDATE>${dateXml}</EFFECTIVEDATE><REFERENCEDATE>${dateXml}</REFERENCEDATE><VCHSTATUSDATE>${dateXml}</VCHSTATUSDATE><GUID>${guid}</GUID><VOUCHERTYPENAME>${voucherType}</VOUCHERTYPENAME><PARTYLEDGERNAME>${esc(partyName)}</PARTYLEDGERNAME><PARTYNAME>${esc(partyName)}</PARTYNAME><ADDRESS.LIST><ADDRESS>${esc(partyAddress)}</ADDRESS></ADDRESS.LIST><STATENAME>${esc(partyState)}</STATENAME><COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE><PARTYGSTIN>${esc(partyGstin)}</PARTYGSTIN><PLACEOFSUPPLY>${esc(partyState)}</PLACEOFSUPPLY><VOUCHERNUMBER>${esc(data.invoiceNumber)}</VOUCHERNUMBER><REFERENCE>${esc(data.invoiceNumber)}</REFERENCE><BASICBUYERNAME>${esc(buyerName)}</BASICBUYERNAME><ISINVOICE>Yes</ISINVOICE><NARRATION>${narration}</NARRATION><LEDGERENTRIES.LIST><LEDGERNAME>${esc(partyName)}</LEDGERNAME><ISDEEMEDPOSITIVE>${partyDeemedPos}</ISDEEMEDPOSITIVE><ISPARTYLEDGER>Yes</ISPARTYLEDGER><AMOUNT>${partyAmountStr}</AMOUNT><BILLALLOCATIONS.LIST><NAME>${esc(data.invoiceNumber)}</NAME><BILLTYPE>New Ref</BILLTYPE><AMOUNT>${partyAmountStr}</AMOUNT></BILLALLOCATIONS.LIST></LEDGERENTRIES.LIST>${inventoryXml}${taxLedgersXml}</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`;
 };
 
 // --- PUSH FUNCTION ---

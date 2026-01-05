@@ -11,13 +11,14 @@ import Navbar from './components/Navbar';
 import InvalidFileModal from './components/InvalidFileModal';
 import SettingsModal from './components/SettingsModal';
 import AuthScreen from './components/AuthScreen';
+import TokenLimitModal from './components/TokenLimitModal';
 import { InvoiceData, LogEntry, AppView, ProcessedFile, Message } from './types';
 import { ArrowRight, CheckCircle2, X, FileText, AlertTriangle, CloudUpload, LayoutDashboard } from 'lucide-react';
 import { checkTallyConnection, fetchExistingLedgers, generateTallyXml, pushToTally, fetchOpenCompanies, getInvoiceLedgerRequirements } from './services/tallyService';
 import BulkLedgerCreationModal from './components/BulkLedgerCreationModal';
 import BulkProcessLoader from './components/BulkProcessLoader';
 import DeleteConfirmationModal from './components/DeleteConfirmationModal';
-import { processDocumentWithAI } from './services/backendService';
+import { processDocumentWithAI, unlockPdf, getTokenUsage, TokenUsageData, updateNotifiedThreshold } from './services/backendService';
 import { saveInvoiceToDB, saveLogToDB, deleteUploadFromDB, saveInvoiceRegistry, checkInvoiceExists, getInvoiceRegistry } from './services/dbService';
 import { TALLY_API_URL, EMPTY_INVOICE, BACKEND_API_KEY } from './constants';
 import { v4 as uuidv4 } from 'uuid';
@@ -27,10 +28,15 @@ import PasswordInputModal from './components/PasswordInputModal';
 
 
 const App: React.FC = () => {
+    // Auth State with Username
     const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [userName, setUserName] = useState('');
+    const [tokenData, setTokenData] = useState<TokenUsageData | null>(null);
     const [currentView, setCurrentView] = useState<AppView>(AppView.DASHBOARD);
 
     // Chat State (Persists on Navigation, Clears on Refresh)
+
+
     const [chatMessages, setChatMessages] = useState<Message[]>([
         {
             id: '1',
@@ -106,6 +112,9 @@ const App: React.FC = () => {
     // Password Handling
     const [showPasswordModal, setShowPasswordModal] = useState(false);
     const [pendingPasswordFile, setPendingPasswordFile] = useState<ProcessedFile | null>(null);
+
+    // Token Limit Modal
+    const [showTokenLimitModal, setShowTokenLimitModal] = useState(false);
 
     useEffect(() => {
         if (darkMode) {
@@ -314,7 +323,7 @@ const App: React.FC = () => {
             const result = await processDocumentWithAI(entry.file, BACKEND_API_KEY, password);
             if (isCancelledRef.current) return;
 
-             // Handle Password Required
+            // Handle Password Required
             if (result.status === 422 && (result.message?.includes('Password') || result.message?.includes('password'))) {
                 setPendingPasswordFile(entry);
                 setShowPasswordModal(true);
@@ -327,6 +336,23 @@ const App: React.FC = () => {
                 throw new Error(result.message || 'Failed to process document');
             }
             const data = result.invoice;
+
+            // Decrypted PDF handling
+            let previewUrl: string | undefined = undefined;
+            if (result.decryptedPdf) {
+                try {
+                    const binStr = atob(result.decryptedPdf);
+                    const len = binStr.length;
+                    const arr = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) {
+                        arr[i] = binStr.charCodeAt(i);
+                    }
+                    const blob = new Blob([arr], { type: 'application/pdf' });
+                    previewUrl = URL.createObjectURL(blob);
+                } catch (e) {
+                    console.error("Failed to create blob from decrypted PDF", e);
+                }
+            }
 
             if (data.documentType === 'BANK_STATEMENT') {
                 setProcessedFiles(prev => prev.map(f => f.id === entry.id ? { ...f, status: 'Mismatch', error: "Detected as Bank Statement" } : f));
@@ -342,7 +368,9 @@ const App: React.FC = () => {
                     return {
                         ...f,
                         status: 'Ready',
+                        error: undefined, // Clear any previous errors (like Password Required)
                         data: data,
+                        previewUrl: previewUrl, // Save the preview URL
                         timeTaken: `${duration} min`,
                         correctEntries: correct,
                         incorrectEntries: incorrect
@@ -355,16 +383,35 @@ const App: React.FC = () => {
             // Removed auto-save to registry. Registry save happens only on final confirmation/push.
             setToast({ show: true, message: `${entry.fileName} processed successfully`, type: 'success' });
 
+            // Refresh token usage after AI operation
+            try {
+                const usage = await getTokenUsage(BACKEND_API_KEY);
+                if (usage) {
+                    setTokenData(usage);
+                }
+            } catch (e) {
+                console.error("Failed to refresh token data:", e);
+            }
+
         } catch (error) {
             const duration = ((Date.now() - start) / 1000 / 60).toFixed(2);
             let errorMsg = error instanceof Error ? error.message : "Processing Failed";
+
+            // Check for 429 - Token limit reached
+            if (errorMsg.includes("Token limit") || errorMsg.includes("429")) {
+                setShowTokenLimitModal(true);
+                setProcessedFiles(prev => prev.map(f =>
+                    f.id === entry.id ? { ...f, status: 'Failed', error: 'Token limit reached', timeTaken: `${duration} min` } : f
+                ));
+                return;
+            }
 
             if (errorMsg.includes("The document has no pages")) {
                 errorMsg = "Empty or Corrupted File";
                 setInvalidFileAlert({ show: true, fileName: entry.fileName, reason: "File empty/corrupted." });
             }
 
-            if (retryCount < 2 && !password) { // Don't auto-retry if password failed (unless we want to?)
+            if (retryCount < 0 && !password) { // DISABLED RETRY: Single attempt only
                 // Retry Logic
                 console.log(`Retrying ${entry.fileName}... Attempt ${retryCount + 1}`);
                 setTimeout(() => processSingleFile(entry, retryCount + 1), 2000);
@@ -745,7 +792,7 @@ const App: React.FC = () => {
             // Merge skipped ledgers so they are treated as "Existing" (i.e., Do Not Create)
             skippedLedgers.forEach(l => existingLedgers.add(l));
 
-            const xml = generateTallyXml(invoice, existingLedgers);
+            const xml = generateTallyXml(invoice, existingLedgers, userName);
             const result = await pushToTally(xml);
 
             // Update Log
@@ -832,7 +879,7 @@ const App: React.FC = () => {
                     // Merge skipped ledgers to suppress creation logic in generateTallyXml
                     skippedLedgers.forEach(l => existingLedgers.add(l));
 
-                    const xml = generateTallyXml(file.data, existingLedgers);
+                    const xml = generateTallyXml(file.data, existingLedgers, userName);
                     const result = await pushToTally(xml);
 
                     if (result.success) {
@@ -1032,6 +1079,49 @@ const App: React.FC = () => {
         setToast({ show: true, message: `Exported ${filteredFiles.length} files`, type: 'success' });
     };
 
+    // Fetch token usage from backend
+    const fetchTokenData = async () => {
+        try {
+            const usage = await getTokenUsage(BACKEND_API_KEY);
+            if (usage) {
+                setTokenData(usage);
+
+                // Check for threshold notifications
+                const thresholds = [25, 50, 75, 100];
+                const currentThreshold = thresholds.filter(t => usage.percentage >= t).pop() || 0;
+
+                if (currentThreshold > usage.last_notified_threshold) {
+                    // Show notification
+                    const messages: Record<number, { msg: string; type: 'success' | 'warning' | 'error' }> = {
+                        25: { msg: `You've used 25% of your monthly tokens (${usage.used}/${usage.limit})`, type: 'success' },
+                        50: { msg: `You've used 50% of your monthly tokens (${usage.used}/${usage.limit})`, type: 'warning' },
+                        75: { msg: `Warning: 75% of monthly tokens used (${usage.used}/${usage.limit})`, type: 'warning' },
+                        100: { msg: `Token limit reached! (${usage.used}/${usage.limit})`, type: 'error' }
+                    };
+
+                    if (messages[currentThreshold]) {
+                        setToast({ show: true, message: messages[currentThreshold].msg, type: messages[currentThreshold].type });
+                        // Update backend to prevent duplicate notifications
+                        await updateNotifiedThreshold(BACKEND_API_KEY, currentThreshold);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error fetching token usage:', error);
+        }
+    };
+
+    // Restore useEffect for auth username load which I messed up in previous chunk because I replaced it with `...`
+    useEffect(() => {
+        if (isAuthenticated) {
+            checkStatus();
+            const user = localStorage.getItem('autotally_username');
+            if (user) setUserName(user);
+            fetchTokenData();
+        }
+    }, [isAuthenticated]);
+
+
     const handleLock = () => {
         setIsAuthenticated(false);
     };
@@ -1177,6 +1267,8 @@ const App: React.FC = () => {
                         <InvoiceEditor
                             data={displayData}
                             file={currentFile}
+                            previewUrl={fileEntry?.previewUrl}
+                            isLocked={fileEntry?.error === 'Password Required'}
                             onSave={handleSaveInvoice}
                             onPush={handleEditorPush}
                             onDelete={handleDeleteFile}
@@ -1193,6 +1285,7 @@ const App: React.FC = () => {
                             loadCompanies={loadCompanies}
                             loadingCompanies={loadingCompanies}
                             onPushAll={handleBulkPushToTally}
+                            userName={userName}
                         />
                     </div>
                 </div>
@@ -1207,6 +1300,7 @@ const App: React.FC = () => {
                     onRegisterFile={(f) => handleRegisterFile(f, 'BANK_STATEMENT')}
                     onUpdateFile={handleUpdateFile}
                     onDelete={(id) => handleDeleteFile(id || bankFileEntry?.id)}
+                    userName={userName}
                 />
             );
         }
@@ -1223,6 +1317,7 @@ const App: React.FC = () => {
                     externalMappedData={excelFile?.excelData || null}
                     externalMapping={excelFile?.excelMapping || null}
                     onDelete={() => excelFile ? handleDeleteFile(excelFile.id) : undefined}
+                    userName={userName}
                 />
             );
         }
@@ -1340,6 +1435,9 @@ const App: React.FC = () => {
                 darkMode={darkMode} toggleDarkMode={() => setDarkMode(!darkMode)}
                 tallyStatus={tallyStatus} onCheckStatus={checkStatus} searchTerm={searchTerm} onSearchChange={setSearchTerm} onOpenSettings={() => setIsSettingsOpen(true)}
                 onLock={handleLock}
+                userName={userName}
+                tokenData={tokenData}
+                onRefreshTokenData={fetchTokenData}
             />
             {/* Main Content Area */}
             <main className="flex-1 overflow-auto relative p-6">
@@ -1349,24 +1447,99 @@ const App: React.FC = () => {
                 </div>
             </main>
             {/* Password Modal */}
-            <PasswordInputModal 
+            <PasswordInputModal
                 isOpen={showPasswordModal}
                 fileName={pendingPasswordFile?.fileName || 'Document'}
-                onSubmit={(password) => {
+                onSubmit={async (password) => {
                     if (pendingPasswordFile) {
                         setShowPasswordModal(false);
+
+                        // 1. Instant Unlock (UI Update First)
                         setProcessedFiles(prev => prev.map(f => f.id === pendingPasswordFile.id ? { ...f, status: 'Processing' } : f));
-                        processSingleFile(pendingPasswordFile, 0, password); // Retry with password
+
+                        try {
+                            const decryptedB64 = await unlockPdf(pendingPasswordFile.file, password);
+                            if (decryptedB64) {
+                                // Convert to Blob for Preview
+                                const binStr = atob(decryptedB64);
+                                const len = binStr.length;
+                                const arr = new Uint8Array(len);
+                                for (let i = 0; i < len; i++) {
+                                    arr[i] = binStr.charCodeAt(i);
+                                }
+                                const blob = new Blob([arr], { type: 'application/pdf' });
+                                const previewUrl = URL.createObjectURL(blob);
+
+                                // Update UI IMMEDIATELY to show preview
+                                setProcessedFiles(prev => prev.map(f =>
+                                    f.id === pendingPasswordFile.id ? {
+                                        ...f,
+                                        previewUrl: previewUrl,
+                                        error: undefined // Remove lock screen
+                                    } : f
+                                ));
+                            }
+                        } catch (e) {
+                            console.error("Quick unlock failed, falling back to full process", e);
+                        }
+
+                        // 2. Continue with Full AI Processing (Background)
+                        const currentFile = pendingPasswordFile;
                         setPendingPasswordFile(null);
+
+                        // Process the file with password
+                        await processSingleFile(currentFile, 0, password);
+
+                        // 3. Check for next pending password-protected file
+                        // Use setTimeout to ensure state is updated
+                        setTimeout(() => {
+                            setProcessedFiles(prev => {
+                                const nextPasswordFile = prev.find(f =>
+                                    f.status === 'Pending' && f.error === 'Password Required'
+                                );
+                                if (nextPasswordFile) {
+                                    setPendingPasswordFile(nextPasswordFile);
+                                    setShowPasswordModal(true);
+                                }
+                                return prev;
+                            });
+                        }, 100);
                     }
                 }}
                 onCancel={() => {
                     setShowPasswordModal(false);
                     if (pendingPasswordFile) {
-                         setProcessedFiles(prev => prev.map(f => f.id === pendingPasswordFile.id ? { ...f, status: 'Failed', error: 'Password Cancelled' } : f));
+                        setProcessedFiles(prev => prev.map(f => f.id === pendingPasswordFile.id ? { ...f, status: 'Failed', error: 'Password Cancelled' } : f));
                     }
                     setPendingPasswordFile(null);
+
+                    // Check for next pending password-protected file after cancel too
+                    setTimeout(() => {
+                        setProcessedFiles(prev => {
+                            const nextPasswordFile = prev.find(f =>
+                                f.status === 'Pending' && f.error === 'Password Required'
+                            );
+                            if (nextPasswordFile) {
+                                setPendingPasswordFile(nextPasswordFile);
+                                setShowPasswordModal(true);
+                            }
+                            return prev;
+                        });
+                    }, 100);
                 }}
+            />
+
+            {/* Token Limit Modal */}
+            <TokenLimitModal
+                isOpen={showTokenLimitModal}
+                onClose={() => setShowTokenLimitModal(false)}
+                onOpenSettings={() => {
+                    setShowTokenLimitModal(false);
+                    alert('Please open Settings from the navbar (top right) to upgrade your plan or reset token usage.');
+                }}
+                plan={tokenData?.plan || 'Bronze'}
+                used={tokenData?.used || 0}
+                limit={tokenData?.limit || 1000}
             />
 
             {toast.show && (

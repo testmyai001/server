@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Lock, Unlock, Key, ShieldCheck, ArrowRight, AlertCircle, FileText } from 'lucide-react';
-import { savePin, verifyPin, hasPinSetup } from '../services/authService';
+import { savePin, verifyPin, hasPinSetup, saveUser } from '../services/authService';
 
 interface AuthScreenProps {
   onAuthenticated: () => void;
@@ -11,6 +11,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated }) => {
   const [mode, setMode] = useState<'login' | 'setup'>('login');
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
+  const [username, setUsername] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -53,9 +54,14 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated }) => {
       setError('PINs do not match');
       return;
     }
+    if (!username.trim()) {
+      setError('Please enter your Name');
+      return;
+    }
 
     setIsLoading(true);
     await savePin(pin);
+    saveUser(username.trim());
     setIsLoading(false);
     onAuthenticated();
   };
@@ -97,16 +103,28 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated }) => {
               </div>
 
               {mode === 'setup' && (
-                <div className="animate-fade-in">
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2 text-center">Confirm PIN</label>
-                  <input
-                    type="password"
-                    value={confirmPin}
-                    onChange={(e) => { setConfirmPin(e.target.value); setError(''); }}
-                    className="w-full px-4 py-4 text-center text-2xl font-bold tracking-widest bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-white placeholder-slate-400"
-                    placeholder="••••"
-                    maxLength={8}
-                  />
+                <div className="animate-fade-in space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2 text-center">Confirm PIN</label>
+                    <input
+                      type="password"
+                      value={confirmPin}
+                      onChange={(e) => { setConfirmPin(e.target.value); setError(''); }}
+                      className="w-full px-4 py-4 text-center text-2xl font-bold tracking-widest bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-white placeholder-slate-400"
+                      placeholder="••••"
+                      maxLength={8}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2 text-center">User Name</label>
+                    <input
+                      type="text"
+                      value={username}
+                      onChange={(e) => { setUsername(e.target.value); setError(''); }}
+                      className="w-full px-4 py-3 text-center text-lg font-bold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-slate-900 dark:text-white placeholder-slate-400"
+                      placeholder="e.g. John Doe"
+                    />
+                  </div>
                 </div>
               )}
             </div>
@@ -122,8 +140,8 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated }) => {
               type="submit"
               disabled={isLoading || !pin}
               className={`w-full py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 ${isLoading
-                  ? 'bg-slate-200 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
-                  : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                ? 'bg-slate-200 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
+                : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                 }`}
             >
               {isLoading ? 'Verifying...' : (mode === 'setup' ? 'Set PIN & Continue' : 'Unlock')}

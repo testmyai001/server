@@ -1,12 +1,14 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { InvoiceData, LineItem } from '../types';
-import { Plus, Trash2, Save, RefreshCw, FileText, FilePlus, ExternalLink, ArrowRight, Loader2, ChevronLeft, ChevronRight, FileDown, Check, AlertTriangle, ShieldAlert, User, Building, ChevronDown, ZoomIn, ZoomOut, RotateCw, RotateCcw } from 'lucide-react';
+import { Plus, Trash2, Save, RefreshCw, FileText, FilePlus, ExternalLink, ArrowRight, Loader2, ChevronLeft, ChevronRight, FileDown, Check, AlertTriangle, ShieldAlert, User, Building, ChevronDown, ZoomIn, ZoomOut, RotateCw, RotateCcw, Lock } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { fetchOpenCompanies, fetchExistingLedgers, fetchCompanyDetails } from '../services/tallyService';
 
 interface InvoiceEditorProps {
     data: InvoiceData;
     file?: File;
+    previewUrl?: string; // Decrypted URL override
+    isLocked?: boolean; // New prop to hide preview if locked
     onSave: (data: InvoiceData, switchTab?: boolean) => void;
     onPush: (data: InvoiceData) => void;
     onDelete?: () => void;
@@ -27,6 +29,7 @@ interface InvoiceEditorProps {
     loadCompanies: () => void;
     loadingCompanies: boolean;
     onPushAll?: () => void;
+    userName?: string;
 }
 
 /**
@@ -47,6 +50,8 @@ const round = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100;
 const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
     data,
     file,
+    previewUrl,
+    isLocked = false,
     onSave,
     onPush,
     onDelete,
@@ -65,7 +70,8 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
     companies,
     loadCompanies,
     loadingCompanies,
-    onPushAll
+    onPushAll,
+    userName
 }) => {
     const [formData, setFormData] = useState<InvoiceData>(() => ({
         ...data,
@@ -142,12 +148,17 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
     }, [data, lastSyncedInvoice]);
 
     useEffect(() => {
+        if (previewUrl) {
+            setFileUrl(previewUrl);
+            return;
+        }
         if (file) {
             const url = URL.createObjectURL(file);
             setFileUrl(url);
             return () => URL.revokeObjectURL(url);
         }
-    }, [file]);
+        setFileUrl(null);
+    }, [file, previewUrl]);
 
     useEffect(() => {
         loadCompanies();
@@ -488,10 +499,22 @@ const InvoiceEditor: React.FC<InvoiceEditorProps> = ({
                     )}
                 </div>
                 <div className="flex-1 overflow-hidden bg-slate-200 dark:bg-slate-950 flex items-center justify-center relative">
-                    {fileUrl ? (
+                    {/* Locked Placeholder */}
+                    {isLocked ? (
+                        <div className="flex flex-col items-center justify-center p-8 text-center animate-fade-in">
+                            <div className="w-16 h-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4 shadow-inner">
+                                <Lock className="w-8 h-8 text-slate-400 dark:text-slate-500" />
+                            </div>
+                            <h3 className="text-lg font-bold text-slate-700 dark:text-slate-300">Preview Locked</h3>
+                            <p className="text-sm text-slate-500 dark:text-slate-400 max-w-[200px] mt-2">
+                                Enter password in the popup to unlock this document.
+                            </p>
+                        </div>
+                    ) : fileUrl ? (
                         file?.type === 'application/pdf' ? (
                             <div className="w-full h-full overflow-auto scrollbar-hide flex items-center justify-center bg-slate-800/5">
                                 <object
+                                    key={fileUrl}
                                     data={`${fileUrl}#toolbar=0&navpanes=0`}
                                     type="application/pdf"
                                     className="transition-transform duration-200 ease-out origin-center"

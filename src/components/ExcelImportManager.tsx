@@ -21,6 +21,7 @@ interface ExcelImportManagerProps {
     externalMappedData?: ExcelVoucher[] | null; // Pre-loaded mapped data
     externalMapping?: any; // Pre-loaded column mapping
     onDelete?: (id?: string) => void;
+    userName?: string;
 }
 
 // Precision Helper
@@ -68,7 +69,7 @@ const calculateCess = (
     return 0;
 };
 
-const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRegisterFile, onUpdateFile, externalFile, externalFileId, externalMappedData, externalMapping, onDelete }) => {
+const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRegisterFile, onUpdateFile, externalFile, externalFileId, externalMappedData, externalMapping, onDelete, userName = '' }) => {
     const [step, setStep] = useState<1 | 2 | 3>(1);
     const [file, setFile] = useState<File | null>(null);
     const [fileId, setFileId] = useState<string | null>(null);
@@ -1013,7 +1014,8 @@ const ExcelImportManager: React.FC<ExcelImportManagerProps> = ({ onPushLog, onRe
                 // Add small visual delay to let the UI breathe and show animation
                 await new Promise(r => setTimeout(r, 50));
 
-                const xml = generateBulkExcelXml(batch, createdMasters, selectedCompany, mappings);
+                // Pass userName to generateBulkExcelXml for narration
+                const xml = generateBulkExcelXml(batch, createdMasters, selectedCompany, mappings, userName);
                 console.log(`DEBUG: Batch ${i + 1} XML generated. Size: ${xml.length}`);
                 
                 const result = await pushToTally(xml);

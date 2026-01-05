@@ -1,9 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Moon, Sun, Shield, Trash2, Monitor, RefreshCw, CheckCircle2, AlertTriangle, Server, Network, FileText, ChevronDown, ChevronUp, Search, Clock } from 'lucide-react';
+import { X, Moon, Sun, Shield, Trash2, Monitor, RefreshCw, CheckCircle2, AlertTriangle, Server, Network, FileText, ChevronDown, ChevronUp, Search, Clock, Award, Medal, Crown } from 'lucide-react';
 import { getInvoiceRegistry, InvoiceRegistryEntry, clearInvoiceRegistry } from '../services/dbService';
 import { removePin } from '../services/authService';
-import { TALLY_API_URL, BACKEND_API_URL } from '../constants';
+import { TALLY_API_URL, BACKEND_API_URL, BACKEND_API_KEY } from '../constants';
+import { getTokenUsage, resetTokens, setPlan, TokenUsageData } from '../services/backendService';
+
 
 interface SettingsModalProps {
     onClose: () => void;
@@ -25,6 +27,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
     const [showHistory, setShowHistory] = useState(false);
     const [searchHistory, setSearchHistory] = useState('');
 
+    // Token Management State
+    const [tokenData, setTokenData] = useState<TokenUsageData | null>(null);
+    const [resetTokensConfirm, setResetTokensConfirm] = useState(false);
+
     useEffect(() => {
         // Initialize with current values
         setTallyUrl(localStorage.getItem('tally_api_url') || TALLY_API_URL);
@@ -38,6 +44,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
             setInvoiceHistory(history);
         };
         loadHistory();
+
+        // Load Token Data
+        const loadTokenData = async () => {
+            const usage = await getTokenUsage(BACKEND_API_KEY);
+            if (usage) {
+                setTokenData(usage);
+            }
+        };
+        loadTokenData();
     }, []);
 
     const handleSaveUrls = () => {
@@ -72,6 +87,31 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
             setConfirmDeleteInvoices(false);
         } else {
             setConfirmDeleteInvoices(true);
+        }
+    };
+
+    const handleResetTokens = async () => {
+        if (resetTokensConfirm) {
+            const success = await resetTokens(BACKEND_API_KEY);
+            if (success) {
+                const usage = await getTokenUsage(BACKEND_API_KEY);
+                if (usage) {
+                    setTokenData(usage);
+                }
+                setResetTokensConfirm(false);
+            }
+        } else {
+            setResetTokensConfirm(true);
+        }
+    };
+
+    const handleChangePlan = async (plan: 'Bronze' | 'Gold' | 'Platinum') => {
+        const success = await setPlan(BACKEND_API_KEY, plan);
+        if (success) {
+            const usage = await getTokenUsage(BACKEND_API_KEY);
+            if (usage) {
+                setTokenData(usage);
+            }
         }
     };
 
@@ -174,6 +214,83 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, darkMode, toggle
                                 className="px-3 py-1.5 text-xs font-bold text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-1"
                             >
                                 <RefreshCw className="w-3 h-3" /> Reset
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Token Management */}
+                    <div>
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Token Management</h4>
+                        
+                        {/* Current Plan Display */}
+                        {tokenData && (
+                            <div className="mb-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-700">
+                                <div className="flex items-center justify-between mb-3">
+                                    <div className="flex items-center gap-2">
+                                        {tokenData.plan === 'Bronze' && <Medal className="w-5 h-5 text-amber-600" />}
+                                        {tokenData.plan === 'Gold' && <Award className="w-5 h-5 text-yellow-500" />}
+                                        {tokenData.plan === 'Platinum' && <Crown className="w-5 h-5 text-purple-500" />}
+                                        <span className="font-bold text-slate-700 dark:text-slate-200">{tokenData.plan}</span>
+                                    </div>
+                                    <span className="text-xs text-slate-500">{tokenData.used} / {tokenData.limit}</span>
+                                </div>
+                                <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
+                                    <div 
+                                        className={`h-2 rounded-full transition-all ${tokenData.percentage >= 75 ? 'bg-red-500' : tokenData.percentage >= 50 ? 'bg-orange-500' : 'bg-emerald-500'}`}
+                                        style={{ width: `${Math.min(tokenData.percentage, 100)}%` }}
+                                    />
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Change Plan */}
+                        <div className="mb-4">
+                            <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-2 block">Change Plan</label>
+                            <div className="grid grid-cols-3 gap-2">
+                                {(['Bronze', 'Gold', 'Platinum'] as const).map((plan) => {
+                                    const limits = { Bronze: 1000, Gold: 5000, Platinum: 10000 };
+                                    const Icon = plan === 'Bronze' ? Medal : plan === 'Gold' ? Award : Crown;
+                                    const isActive = tokenData?.plan === plan;
+                                    return (
+                                        <button
+                                            key={plan}
+                                            onClick={() => handleChangePlan(plan)}
+                                            className={`p-3 rounded-lg text-xs font-bold transition-all flex flex-col items-center gap-1 ${
+                                                isActive
+                                                    ? 'bg-indigo-600 text-white border-2 border-indigo-500'
+                                                    : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700'
+                                            }`}
+                                        >
+                                            <Icon className="w-4 h-4" />
+                                            <span>{plan}</span>
+                                            <span className="text-[10px] opacity-70">{limits[plan]} tokens</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Reset Tokens */}
+                        <div className="p-4 bg-orange-50 dark:bg-orange-900/10 rounded-xl border border-orange-100 dark:border-orange-900/30">
+                            <div className="flex items-start gap-3 mb-3">
+                                <RefreshCw className="w-5 h-5 text-orange-500 mt-0.5" />
+                                <div>
+                                    <p className="font-bold text-orange-800 dark:text-orange-400 text-sm">Reset Token Usage</p>
+                                    <p className="text-xs text-orange-600 dark:text-orange-300 mt-1">
+                                        Reset your current token count to 0. Your plan will remain unchanged.
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={handleResetTokens}
+                                className={`w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                                    resetTokensConfirm
+                                        ? 'bg-orange-600 text-white hover:bg-orange-700 shadow-md'
+                                        : 'bg-white dark:bg-slate-800 text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800 hover:bg-orange-50 dark:hover:bg-orange-900/20'
+                                }`}
+                            >
+                                <RefreshCw className="w-4 h-4" />
+                                {resetTokensConfirm ? 'Click again to confirm' : 'Reset Token Usage'}
                             </button>
                         </div>
                     </div>

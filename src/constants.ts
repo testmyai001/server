@@ -20,7 +20,7 @@ import { InvoiceData } from './types';
  */
 
 // Backend API Configuration - AI & Data Only (No Tally)
-export const BACKEND_API_URL = localStorage.getItem('backend_api_url') || import.meta.env.VITE_API_BASE_URL || 'https://server1000-63i8.onrender.com';
+export const BACKEND_API_URL = import.meta.env.VITE_API_BASE_URL;
 export const BACKEND_API_KEY = import.meta.env.VITE_BACKEND_API_KEY;
 
 // Tally Prime runs on port 9000 - Connected DIRECTLY from React only

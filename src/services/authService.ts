@@ -123,4 +123,13 @@ export const hasPinSetup = (): boolean => {
 
 export const removePin = (): void => {
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem('autotally_username');
+};
+
+export const saveUser = (username: string): void => {
+  localStorage.setItem('autotally_username', username);
+};
+
+export const getUser = (): string | null => {
+  return localStorage.getItem('autotally_username');
 };

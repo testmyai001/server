@@ -80,6 +80,7 @@ export interface ProcessedFile {
   file: File;
   status: 'Pending' | 'Processing' | 'Ready' | 'Success' | 'Failed' | 'Mismatch';
   fileName: string;
+  previewUrl?: string; // For decrypted PDF or other previews
   sourceType: 'OCR_INVOICE' | 'BANK_STATEMENT' | 'EXCEL_IMPORT'; // NEW: Track source
   data?: InvoiceData;
   bankData?: BankStatementData; // NEW: Store Bank Data

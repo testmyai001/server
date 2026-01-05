@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict, Optional, List
 import os
+import json
+import pypdf
 from dotenv import load_dotenv
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
@@ -11,9 +13,35 @@ from pdf_processor import split_pdf_to_images, get_pdf_page_count
 import hashlib
 
 # Load environment variables
-# Load environment variables from the root directory
 import os
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
+import sys
+
+# Try multiple locations for .env
+possible_paths = [
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'), # Root from backend/main.py
+    os.path.join(os.path.dirname(__file__), '.env'), # Same dir as main.py
+    os.path.join(os.getcwd(), '.env'), # Current working directory
+    '.env' # Fallback
+]
+
+env_path = None
+for path in possible_paths:
+    if os.path.exists(path):
+        env_path = path
+        break
+
+if env_path:
+    print(f"✅ Loading .env from: {os.path.abspath(env_path)}")
+    load_dotenv(env_path)
+else:
+    print("⚠️ WARNING: No .env file found! Checking environment variables directly.")
+
+# Debug Key Loading (Masked)
+key = os.getenv("GEMINI_API_KEY", "")
+if key:
+    print(f"✅ GEMINI_API_KEY Found: {key[:4]}...{key[-4:]} (Length: {len(key)})")
+else:
+    print("❌ GEMINI_API_KEY NOT FOUND in environment")
 
 
 app = FastAPI(title="AutoTally Backend API")
@@ -37,6 +65,116 @@ app.add_middleware(
 # Simple API key validation
 VALID_API_KEYS = os.getenv("BACKEND_API_KEY", "").split(",")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# ============================================================
+# TOKEN USAGE TRACKING
+# ============================================================
+TOKEN_USAGE_FILE = os.path.join(os.path.dirname(__file__), "token_usage.json")
+
+# Plan limits
+PLAN_LIMITS = {
+    "Bronze": 50000,
+    "Gold": 100000,
+    "Platinum": 500000
+}
+
+def load_token_usage() -> dict:
+    """Load token usage from JSON file"""
+    default = {
+        "used": 0,
+        "plan": "Bronze",
+        "reset_date": None,
+        "last_notified_threshold": 0
+    }
+    try:
+        if os.path.exists(TOKEN_USAGE_FILE):
+            with open(TOKEN_USAGE_FILE, "r") as f:
+                data = json.load(f)
+                # Check if we need to reset (new month)
+                from datetime import datetime
+                current_month = datetime.now().strftime("%Y-%m")
+                if data.get("reset_date") != current_month:
+                    data["used"] = 0
+                    data["reset_date"] = current_month
+                    data["last_notified_threshold"] = 0
+                    save_token_usage(data)
+                return data
+    except Exception as e:
+        print(f"Error loading token usage: {e}")
+    return default
+
+def save_token_usage(data: dict):
+    """Save token usage to JSON file"""
+    try:
+        from datetime import datetime
+        if not data.get("reset_date"):
+            data["reset_date"] = datetime.now().strftime("%Y-%m")
+        with open(TOKEN_USAGE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"Error saving token usage: {e}")
+
+def track_token_usage(response) -> dict:
+    """Track token usage from Gemini response and return updated stats"""
+    token_data = load_token_usage()
+    tokens_used = 0
+    
+    try:
+        # Try to get token count from various possible attributes
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            metadata = response.usage_metadata
+            # Try total_token_count first
+            if hasattr(metadata, 'total_token_count') and metadata.total_token_count:
+                tokens_used = metadata.total_token_count
+            # Fallback to sum of prompt + candidates
+            elif hasattr(metadata, 'prompt_token_count') and hasattr(metadata, 'candidates_token_count'):
+                prompt_tokens = metadata.prompt_token_count or 0
+                candidate_tokens = metadata.candidates_token_count or 0
+                tokens_used = prompt_tokens + candidate_tokens
+            
+            if tokens_used > 0:
+                token_data["used"] += tokens_used
+                save_token_usage(token_data)
+                print(f"📊 Tokens used this request: {tokens_used}, Total: {token_data['used']}/{PLAN_LIMITS.get(token_data['plan'], 100)}")
+            else:
+                print(f"📊 No token count in metadata: {metadata}")
+        else:
+            print(f"📊 No usage_metadata in response")
+    except Exception as e:
+        print(f"Error tracking tokens: {e}")
+    
+    return {
+        "tokens_this_request": tokens_used,
+        "total_used": token_data["used"],
+        "plan": token_data["plan"],
+        "limit": PLAN_LIMITS.get(token_data["plan"], 100)
+    }
+
+def check_token_limit() -> dict:
+    """Check if user has exceeded token limit. Returns status and message."""
+    token_data = load_token_usage()
+    limit = PLAN_LIMITS.get(token_data["plan"], 1000)
+    used = token_data["used"]
+    
+    if used >= limit:
+        return {
+            "limit_reached": True,
+            "plan": token_data["plan"],
+            "used": used,
+            "limit": limit,
+            "message": f"Token limit reached! You've used {used}/{limit} tokens on your {token_data['plan']} plan. Please upgrade your plan or reset your token usage in Settings."
+        }
+    return {
+        "limit_reached": False,
+        "plan": token_data["plan"],
+        "used": used,
+        "limit": limit
+    }
+
+# Initialize token usage on startup
+_token_data = load_token_usage()
+print(f"📊 Token Usage: {_token_data['used']}/{PLAN_LIMITS.get(_token_data['plan'], 100)} ({_token_data['plan']} plan)")
+
 
 def validate_api_key(authorization: str = Header(None)):
     """Validate the user's backend API key"""
@@ -105,6 +243,79 @@ async def validate_key(authorization: str = Header(None)):
             "success": False,
             "message": e.detail
         }
+
+
+# ============================================================
+# TOKEN USAGE ENDPOINTS
+# ============================================================
+class SetPlanRequest(BaseModel):
+    plan: str
+
+@app.get("/api/token-usage")
+async def get_token_usage(authorization: str = Header(None)):
+    """Get current token usage stats"""
+    validate_api_key(authorization)
+    token_data = load_token_usage()
+    limit = PLAN_LIMITS.get(token_data["plan"], 100)
+    percentage = round((token_data["used"] / limit) * 100, 1) if limit > 0 else 0
+    
+    return {
+        "success": True,
+        "plan": token_data["plan"],
+        "used": token_data["used"],
+        "limit": limit,
+        "percentage": percentage,
+        "reset_date": token_data.get("reset_date"),
+        "last_notified_threshold": token_data.get("last_notified_threshold", 0)
+    }
+
+@app.post("/api/set-plan")
+async def set_plan(request: SetPlanRequest, authorization: str = Header(None)):
+    """Set user's subscription plan"""
+    validate_api_key(authorization)
+    
+    if request.plan not in PLAN_LIMITS:
+        raise HTTPException(status_code=400, detail=f"Invalid plan. Must be one of: {list(PLAN_LIMITS.keys())}")
+    
+    token_data = load_token_usage()
+    token_data["plan"] = request.plan
+    save_token_usage(token_data)
+    
+    return {
+        "success": True,
+        "plan": request.plan,
+        "limit": PLAN_LIMITS[request.plan],
+        "message": f"Plan updated to {request.plan}"
+    }
+
+@app.post("/api/update-notified-threshold")
+async def update_notified_threshold(threshold: int = Body(..., embed=True), authorization: str = Header(None)):
+    """Update the last notified usage threshold to prevent duplicate notifications"""
+    validate_api_key(authorization)
+    
+    token_data = load_token_usage()
+    token_data["last_notified_threshold"] = threshold
+    save_token_usage(token_data)
+    
+    return {"success": True, "last_notified_threshold": threshold}
+
+@app.post("/api/reset-tokens")
+async def reset_tokens(authorization: str = Header(None)):
+    """Reset token usage to 0"""
+    validate_api_key(authorization)
+    
+    token_data = load_token_usage()
+    token_data["used"] = 0
+    token_data["last_notified_threshold"] = 0
+    save_token_usage(token_data)
+    
+    return {
+        "success": True,
+        "message": "Token usage reset to 0",
+        "used": 0,
+        "plan": token_data["plan"],
+        "limit": PLAN_LIMITS.get(token_data["plan"], 1000)
+    }
 
 
 # Pydantic models for Gemini proxy
@@ -190,10 +401,14 @@ async def gemini_proxy(
             # The candidates list will still contain safety info
             pass
 
+        # Track token usage
+        token_stats = track_token_usage(response)
+
         # Return the response
         return {
             "success": True,
             "text": text_content,
+            "token_usage": token_stats,
             "candidates": [
                 {
                     "content": {
@@ -258,6 +473,14 @@ async def chat(
         # Validate API key
         validate_api_key(authorization)
 
+        # Check token limit before processing
+        limit_status = check_token_limit()
+        if limit_status["limit_reached"]:
+            raise HTTPException(
+                status_code=429,
+                detail=limit_status["message"]
+            )
+
         if not GEMINI_API_KEY:
             print("ERROR: GEMINI_API_KEY is missing")
             raise HTTPException(status_code=500, detail="Gemini API key not configured on server")
@@ -285,6 +508,9 @@ async def chat(
         response = model.generate_content(parts)
         print(f"DEBUG: Gemini Response: {response.text[:100]}...")
         
+        # Track token usage
+        track_token_usage(response)
+        
         return {"success": True, "text": response.text}
         
     except ResourceExhausted:
@@ -301,6 +527,47 @@ async def chat(
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
+# ------------------------------------------------------------------
+# FAST UNLOCK ENDPOINT (For Instant Preview)
+# ------------------------------------------------------------------
+@app.post("/ai/unlock-pdf")
+async def unlock_pdf(
+    file: UploadFile = File(...),
+    password: Optional[str] = Form(None)
+):
+    try:
+        file_bytes = await file.read()
+        
+        if not password:
+             raise HTTPException(status_code=400, detail="Password is required for unlocking")
+
+        import io
+        import base64
+        import pypdf
+        
+        # Re-open with pypdf to decrypt
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes), password=password)
+        writer = pypdf.PdfWriter()
+        
+        # Copy all pages to new writer (removes encryption)
+        for page in reader.pages:
+            writer.add_page(page)
+        
+        output_stream = io.BytesIO()
+        writer.write(output_stream)
+        decrypted_b64 = base64.b64encode(output_stream.getvalue()).decode('utf-8')
+        
+        return {
+            "success": True,
+            "decrypted_pdf": decrypted_b64,
+            "message": "PDF unlocked successfully"
+        }
+
+    except Exception as e:
+        print(f"Unlock Error: {e}")
+        # If password was wrong, pypdf raises generic error often, or specific one
+        raise HTTPException(status_code=422, detail="Invalid password or failed to unlock")
+
 @app.post("/ai/process-document")
 async def process_document(
     file: UploadFile = File(...),
@@ -310,17 +577,22 @@ async def process_document(
     """Process a single document (invoice image/PDF) and return structured data"""
     validate_api_key(authorization)
 
+    # Check token limit before processing
+    limit_status = check_token_limit()
+    if limit_status["limit_reached"]:
+        raise HTTPException(
+            status_code=429,
+            detail=limit_status["message"]
+        )
+
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Gemini API key not configured on server")
 
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        # Prefer flash for speed
-        model = genai.GenerativeModel('gemini-2.5-flash')
-
         # Read file bytes
         file_bytes = await file.read()
         mime_type = file.content_type or "application/octet-stream"
+
         
         # Helper to prepare content for Gemini
         gemini_content_parts = []
@@ -346,9 +618,15 @@ async def process_document(
                     
             except Exception as e:
                 error_str = str(e).lower()
-                if "password" in error_str or "encrypted" in error_str:
+                repr_str = repr(e).lower()
+                print(f"DEBUG PDF READ ERROR: {repr(e)}")
+                
+                # Enhanced detection for password protection
+                if "password" in error_str or "encrypted" in error_str or "auth" in error_str or "password" in repr_str:
                     print(f"PASSWORD REQUIRED for {file.filename}")
                     raise HTTPException(status_code=422, detail="Password required")
+                
+                # If we have NO password and read failed, it's highly likely it creates an issue.
                 print(f"PDF reading error (ignoring if not password related): {e}")
 
             # Strategy:
@@ -367,6 +645,9 @@ async def process_document(
                 try:
                     # split_pdf_to_images now accepts password
                     images = split_pdf_to_images(file_bytes, password=password)
+                    if not images:
+                         raise ValueError("No images extracted from PDF")
+                         
                     for img_b64, _ in images:
                          gemini_content_parts.append({
                              "mime_type": "image/png",
@@ -374,6 +655,14 @@ async def process_document(
                          })
                 except Exception as img_err:
                      print(f"Image conversion failed: {img_err}")
+                     # If both Text and Image conversion failed, we cannot proceed.
+                     # If encryption was the cause, we should have caught it above OR simple logic:
+                     if not password:
+                         # Assume it MIGHT be password protected if everything failed
+                         print("Both Text and Image extraction failed. Assuming Password Required.")
+                         raise HTTPException(status_code=422, detail="Password required or file corrupted")
+                     else:
+                         raise HTTPException(status_code=422, detail="Failed to process document even with password")
                      # Fallback to sending raw bytes if not encrypted? 
                      # If it was encrypted, we are stuck.
                      if password:
@@ -446,6 +735,37 @@ RULES FOR INVOICE EXTRACTION:
 Goal:
 Return a clean, structured JSON object suitable for Tally Prime."""
 
+        # ------------------------------------------------------------------
+        # DECRYPTION FOR PREVIEW (One-Password Experience)
+        # If password was provided and we reached here (meaning it was valid),
+        # create a decrypted copy for the frontend to show without prompt.
+        # ------------------------------------------------------------------
+        decrypted_pdf_b64 = None
+        if password and (mime_type == "application/pdf" or file.filename.lower().endswith(".pdf")):
+             try:
+                 import io
+                 import base64
+                 import pypdf
+                 
+                 # Re-open with pypdf to decrypt
+                 # Note: pypdf expects a seekable stream, BytesIO is perfect
+                 reader = pypdf.PdfReader(io.BytesIO(file_bytes), password=password)
+                 writer = pypdf.PdfWriter()
+                 
+                 # Copy all pages to new writer (removes encryption)
+                 for page in reader.pages:
+                     writer.add_page(page)
+                 
+                 output_stream = io.BytesIO()
+                 writer.write(output_stream)
+                 decrypted_pdf_b64 = base64.b64encode(output_stream.getvalue()).decode('utf-8')
+                 print("✅ PDF Decrypted successfully for Preview")
+             except Exception as dec_err:
+                 print(f"⚠️ Failed to decrypt PDF for preview: {dec_err}")
+
+        # Configure Gemini LATE - only after we have content
+        genai.configure(api_key=GEMINI_API_KEY)
+        
         model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=system_instruction)
 
         prompt = """3️⃣ INVOICE PARSING PROMPT (STRICT JSON)
@@ -490,6 +810,9 @@ Rules:
             prompt
         ], generation_config={"response_mime_type": "application/json"})
 
+        # Track token usage
+        track_token_usage(response)
+
         print(f"DEBUG AI RAW RESPONSE: {response.text}")
         clean_json = clean_json_text(response.text)
         data = json.loads(clean_json)
@@ -498,6 +821,7 @@ Rules:
         return {
             "success": True,
             "invoice": data,
+            "decrypted_pdf": decrypted_pdf_b64,
             "message": "Document processed successfully"
         }
     except ResourceExhausted:
@@ -801,14 +1125,44 @@ async def process_bank_statement_pdf(
     # Read uploaded PDF
     pdf_bytes = await file.read()
     
+    # ------------------------------------------------------------------
+    # UNIFIED DECRYPTION LOGIC (Same as Invoices)
+    # ------------------------------------------------------------------
+    if password:
+        try:
+            import io
+            import pypdf
+            print(f"DEBUG: Attempting decryption with password: {password}")
+            
+            # Decrypt to new bytes
+            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes), password=password)
+            writer = pypdf.PdfWriter()
+            for page in reader.pages:
+                writer.add_page(page)
+            
+            output_stream = io.BytesIO()
+            writer.write(output_stream)
+            pdf_bytes = output_stream.getvalue()
+            
+            # Clear password since we now have unlocked bytes
+            password = None 
+            print("✅ Bank Statement Decrypted Successfully")
+            
+        except Exception as e:
+            print(f"❌ Decryption Failed: {e}")
+            raise HTTPException(status_code=422, detail="Invalid password")
+    
     # Attempt Text Extraction first
     import io
     import pdfplumber
     import json
     
     extracted_text = ""
+    
     try:
-        with pdfplumber.open(io.BytesIO(pdf_bytes), password=password) as pdf:
+        # Open with None password (already decrypted if needed)
+        with pdfplumber.open(io.BytesIO(pdf_bytes), password=None) as pdf:
+            print(f"DEBUG: PDF Opened Successfully. Pages: {len(pdf.pages)}")
             for page in pdf.pages:
                 text = page.extract_text()
                 if text:
@@ -906,14 +1260,23 @@ JSON OUTPUT ONLY:
             pass
 
     # ================= FALLBACK: IMAGE PROCESSING =================
-    print("📸 Fallback: Processing Bank Statement as IMAGES")
+    print(f"📸 Fallback: Processing Bank Statement as IMAGES. Password providing: {password}")
     
     try:
+        print("DEBUG: Calling split_pdf_to_images...")
         pages = split_pdf_to_images(pdf_bytes, password=password)
+        print(f"DEBUG: split_pdf_to_images success. {len(pages)} images.")
     except Exception as e:
-        error_str = str(e).lower()
-        if "password" in error_str or "encrypted" in error_str:
+        import traceback
+        print(f"📸 Image Fallback Failed: {e}")
+        # traceback.print_exc() # Optional: keep logs clean if we handle it
+        
+        # Check both str and repr to catch "pdfminer.pdfdocument.PDFPasswordIncorrect"
+        error_str = (str(e) + " " + repr(e)).lower()
+        
+        if "password" in error_str or "encrypted" in error_str or "decryption" in error_str or "incorrect" in error_str:
              raise HTTPException(status_code=422, detail="Password required")
+        
         raise HTTPException(status_code=500, detail=f"Failed to convert PDF to images: {str(e)}")
         
     transactions = []
@@ -1032,9 +1395,6 @@ If it is a bank statement, set "documentType": "BANK_STATEMENT" and extract all 
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process bank statement: {str(e)}")
-
-
-
 
 if __name__ == "__main__":
     import uvicorn

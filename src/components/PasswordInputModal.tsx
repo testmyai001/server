@@ -22,7 +22,7 @@ const PasswordInputModal: React.FC<PasswordInputModalProps> = ({ fileName, isOpe
     };
 
     return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-fade-in p-4">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-fade-in p-4">
             <div
                 className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-md overflow-hidden animate-scale-in"
                 onClick={e => e.stopPropagation()}

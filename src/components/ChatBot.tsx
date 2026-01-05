@@ -188,7 +188,7 @@ const ChatBot: React.FC<ChatBotProps> = ({ messages, onUpdateMessages }) => {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask about Tally, GST, or specific transaction mappings..."
-              className="w-full pl-6 pr-14 py-5 bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl text-base focus:ring-2 focus:ring-indigo-500 outline-none resize-none min-h-[64px] overflow-hidden scrollbar-hide dark:text-white shadow-inner transition-all"
+              className="w-full pl-6 pr-14 py-5 bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl text-base focus:ring-2 focus:ring-indigo-500 outline-none resize-none min-h-[64px] overflow-hidden scrollbar-hide text-slate-900 dark:text-white shadow-inner transition-all"
               rows={1}
             />
             <div className="absolute left-0 bottom-full mb-2 w-full flex justify-center pointer-events-none">

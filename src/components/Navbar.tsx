@@ -22,7 +22,9 @@ import {
 } from 'lucide-react';
 import { AppView } from '../types';
 import AccountingCalculator from './AccountingCalculator';
+import ProfileDropdown from './ProfileDropdown';
 import { syncMastersFromAllCompanies } from '../services/tallyService';
+import { TokenUsageData } from '../services/backendService';
 
 interface NavbarProps {
   currentView: AppView;
@@ -35,6 +37,9 @@ interface NavbarProps {
   onSearchChange: (term: string) => void;
   onOpenSettings: () => void;
   onLock: () => void;
+  userName?: string;
+  tokenData?: TokenUsageData | null;
+  onRefreshTokenData?: () => void;
 }
 
 const Navbar: React.FC<NavbarProps> = ({
@@ -47,7 +52,10 @@ const Navbar: React.FC<NavbarProps> = ({
   searchTerm,
   onSearchChange,
   onOpenSettings,
-  onLock
+  onLock,
+  userName = '',
+  tokenData = null,
+  onRefreshTokenData = () => { }
 }) => {
   const [isCalcOpen, setIsCalcOpen] = useState(false);
   const [isUploadsOpen, setIsUploadsOpen] = useState(false);
@@ -133,6 +141,12 @@ const Navbar: React.FC<NavbarProps> = ({
             {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
 
+          <ProfileDropdown
+            userName={userName}
+            tokenData={tokenData}
+            onRefreshTokenData={onRefreshTokenData}
+          />
+
           <button onClick={onOpenSettings} className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-white" title="Settings">
             <Settings className="w-4 h-4" />
           </button>
@@ -187,7 +201,7 @@ const Navbar: React.FC<NavbarProps> = ({
 
         {/* Dynamic Status & Connectivity Utilities */}
         <div className="flex items-center gap-3 shrink-0 flex-1 justify-end">
-          
+
           {/* Sync Masters - Expanded */}
           <button
             onClick={handleSyncMasters}
@@ -200,7 +214,7 @@ const Navbar: React.FC<NavbarProps> = ({
           >
             {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : syncSuccess ? <CheckCircle className="w-4 h-4" /> : <Database className="w-4 h-4" />}
             <span className="text-[10px] font-black uppercase tracking-widest hidden xl:inline">
-                {isSyncing ? 'Syncing...' : syncSuccess ? 'Synced' : 'Sync Masters'}
+              {isSyncing ? 'Syncing...' : syncSuccess ? 'Synced' : 'Sync Masters'}
             </span>
           </button>
 

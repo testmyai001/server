@@ -745,6 +745,23 @@ const BankStatementManager: React.FC<BankStatementManagerProps> = ({
         ))}
       </datalist>
       <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden" onChange={handleFileUpload} />
+      
+      {/* Password Modal */}
+      <PasswordInputModal
+          isOpen={showPasswordModal}
+          fileName={pendingPasswordFile?.name || 'Bank Statement'}
+          onSubmit={(password) => {
+              handleProcessFile(password);
+          }}
+          onCancel={() => {
+              setShowPasswordModal(false);
+              setPendingPasswordFile(null);
+              setIsProcessing(false);
+              if (fileId && onUpdateFile) {
+                  onUpdateFile(fileId, { status: 'Failed', error: 'Password Cancelled' });
+              }
+          }}
+      />
     </div >
   );
 };

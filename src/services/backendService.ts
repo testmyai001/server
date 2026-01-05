@@ -138,6 +138,31 @@ export const syncLedgersFromBackend = async (
   };
 };
 
+// FAST Unlock PDF
+export const unlockPdf = async (file: File, password: string): Promise<string | null> => {
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('password', password);
+
+    // We use the same API key as processDocument
+    const apiKey = localStorage.getItem('VITE_BACKEND_API_KEY') || import.meta.env.VITE_BACKEND_API_KEY || '';
+
+    const response = await fetch(`${BACKEND_API_URL}/ai/unlock-pdf`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      body: formData,
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.success ? data.decrypted_pdf : null;
+  } catch (e) {
+    console.error("Unlock failed", e);
+    return null;
+  }
+};
+
 // Process document with AI
 export const processDocumentWithAI = async (
   file: File,
@@ -146,6 +171,7 @@ export const processDocumentWithAI = async (
 ): Promise<{
   success: boolean;
   invoice?: InvoiceData;
+  decryptedPdf?: string;
   message: string;
   status?: number;
 }> => {
@@ -171,7 +197,7 @@ export const processDocumentWithAI = async (
     if (!response.ok) {
       return {
         success: false,
-        message: data.message || 'Failed to process document',
+        message: data.message || data.detail || 'Failed to process document',
         status: response.status,
       };
     }
@@ -179,6 +205,7 @@ export const processDocumentWithAI = async (
     return {
       success: true,
       invoice: data.invoice,
+      decryptedPdf: data.decrypted_pdf,
       message: data.message || 'Document processed successfully',
     };
   } catch (error: any) {
@@ -443,6 +470,98 @@ export const getHistoryFromBackend = async (
   return [];
 };
 
+// ============================================================
+// TOKEN USAGE FUNCTIONS
+// ============================================================
+export interface TokenUsageData {
+  plan: 'Bronze' | 'Gold' | 'Platinum';
+  used: number;
+  limit: number;
+  percentage: number;
+  reset_date: string | null;
+  last_notified_threshold: number;
+}
+
+export const getTokenUsage = async (apiKey: string): Promise<TokenUsageData | null> => {
+  try {
+    const response = await fetch(`${BACKEND_API_URL}/api/token-usage`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success) {
+        return {
+          plan: data.plan,
+          used: data.used,
+          limit: data.limit,
+          percentage: data.percentage,
+          reset_date: data.reset_date,
+          last_notified_threshold: data.last_notified_threshold
+        };
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching token usage:', error);
+  }
+  return null;
+};
+
+export const setPlan = async (apiKey: string, plan: string): Promise<boolean> => {
+  try {
+    const response = await fetch(`${BACKEND_API_URL}/api/set-plan`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({ plan })
+    });
+
+    return response.ok;
+  } catch (error) {
+    console.error('Error setting plan:', error);
+    return false;
+  }
+};
+
+export const updateNotifiedThreshold = async (apiKey: string, threshold: number): Promise<boolean> => {
+  try {
+    const response = await fetch(`${BACKEND_API_URL}/api/update-notified-threshold`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({ threshold })
+    });
+
+    return response.ok;
+  } catch (error) {
+    console.error('Error updating threshold:', error);
+    return false;
+  }
+};
+
+export const resetTokens = async (apiKey: string): Promise<boolean> => {
+  try {
+    const response = await fetch(`${BACKEND_API_URL}/api/reset-tokens`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      }
+    });
+
+    return response.ok;
+  } catch (error) {
+    console.error('Error resetting tokens:', error);
+    return false;
+  }
+};
+
 export default {
   authenticateBackend,
   validateApiKey,
@@ -453,4 +572,8 @@ export default {
   deleteInvoiceFromBackend,
   logEventToBackend,
   getHistoryFromBackend,
+  getTokenUsage,
+  setPlan,
+  updateNotifiedThreshold,
+  resetTokens,
 };
